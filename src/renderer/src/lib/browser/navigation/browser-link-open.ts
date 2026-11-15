@@ -25,6 +25,16 @@ import type { CreateBrowserTabOptions } from '@/store/slices/browser/browser-sli
 
 export class BrowserLinkPlacementRefused extends Error {}
 
+function requestReusedPageRefresh(
+  pageId: string,
+  resource: BrowserLinkDestination['resource']
+): void {
+  // A website is not a changed file; only file and document pages are refreshed.
+  if (resource.kind !== 'website') {
+    useAppStore.getState().requestChangedFilePageRefresh(pageId, resource)
+  }
+}
+
 export function browserLinkCommitIsValid(
   state: AppState,
   destination: BrowserLinkDestination,
@@ -179,6 +189,9 @@ export async function openLocalBrowserLink(params: {
     }
     focusOpenedBrowserLink(actual)
     retainCreatedTab = true
+    if (selection.match && context.refreshReusedPage && context.isCurrentRequest?.() !== false) {
+      requestReusedPageRefresh(actual.browserPageId, destination.resource)
+    }
     return { status: 'opened', result: actual }
   } catch (error) {
     if (context.isCurrentRequest?.() === false) {
