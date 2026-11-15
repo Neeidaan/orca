@@ -6,12 +6,16 @@ export type BrowserPageMainFrameEvent =
   | { type: 'ready' }
   /** The page's owner bound this guest element; it may be a new generation. */
   | { type: 'attached' }
+  /** The guest's renderer died or the guest was destroyed. */
+  | { type: 'gone' }
 
 export type BrowserPageGuestIdentity = {
   /** Increases for every guest element a page gets (remount, remint, recovery). */
   generation: number
   /** performance.now() when the element was registered, before its guest could navigate. */
   registeredAt: number
+  /** `attaching` until the guest first answers; only an attached guest can be proved dead. */
+  lifecycle: 'attaching' | 'attached' | 'gone'
 }
 
 type Listener = (webview: Electron.WebviewTag, event: BrowserPageMainFrameEvent) => void
@@ -22,7 +26,19 @@ let nextGeneration = 1
 
 export function noteBrowserPageGuestRegistered(webview: Electron.WebviewTag): void {
   if (!guestIdentities.has(webview)) {
-    guestIdentities.set(webview, { generation: nextGeneration++, registeredAt: performance.now() })
+    guestIdentities.set(webview, {
+      generation: nextGeneration++,
+      registeredAt: performance.now(),
+      lifecycle: 'attaching'
+    })
+  }
+}
+
+/** Records that the guest answered (it may have attached before its listeners were bound). */
+export function noteBrowserPageGuestAttached(webview: Electron.WebviewTag): void {
+  const identity = guestIdentities.get(webview)
+  if (identity?.lifecycle === 'attaching') {
+    identity.lifecycle = 'attached'
   }
 }
 
@@ -85,16 +101,33 @@ export function observeBrowserPageMainFrameEvents(
       emit(pageId, webview, { type: 'fail' })
     }
   }
-  const onReady = (): void => emit(pageId, webview, { type: 'ready' })
+  const onReady = (): void => {
+    noteBrowserPageGuestAttached(webview)
+    emit(pageId, webview, { type: 'ready' })
+  }
+  const onAttach = (): void => noteBrowserPageGuestAttached(webview)
+  const onGone = (): void => {
+    const identity = guestIdentities.get(webview)
+    if (identity) {
+      identity.lifecycle = 'gone'
+    }
+    emit(pageId, webview, { type: 'gone' })
+  }
   webview.addEventListener('did-start-navigation', onStart)
   webview.addEventListener('did-navigate', onCommit)
   webview.addEventListener('did-fail-load', onFail)
   webview.addEventListener('dom-ready', onReady)
+  webview.addEventListener('did-attach', onAttach)
+  webview.addEventListener('render-process-gone', onGone)
+  webview.addEventListener('destroyed', onGone)
   emit(pageId, webview, { type: 'attached' })
   return () => {
     webview.removeEventListener('did-start-navigation', onStart)
     webview.removeEventListener('did-navigate', onCommit)
     webview.removeEventListener('did-fail-load', onFail)
     webview.removeEventListener('dom-ready', onReady)
+    webview.removeEventListener('did-attach', onAttach)
+    webview.removeEventListener('render-process-gone', onGone)
+    webview.removeEventListener('destroyed', onGone)
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useAppStore } from '@/store/index'
 import {
   driveChangedFilePageRefresh,
+  type ChangedFilePageRefreshDrive,
   type ChangedFilePageRefreshOwner
 } from './changed-file-page-refresh-driver'
 
@@ -15,6 +16,7 @@ export function useChangedFilePageRefresh(
     pageId ? (s.changedFileRefreshByPageId[pageId] ?? null) : null
   )
   const ownerRef = useRef(owner)
+  const driveRef = useRef<ChangedFilePageRefreshDrive | null>(null)
   useEffect(() => {
     ownerRef.current = owner
   })
@@ -24,7 +26,7 @@ export function useChangedFilePageRefresh(
     }
     // Delegate so every step reads the owner's latest page state and guest.
     const latest = ownerRef
-    return driveChangedFilePageRefresh(pageId, intent, {
+    const drive = driveChangedFilePageRefresh(pageId, intent, {
       readWebview: () => latest.current.readWebview(),
       pointsAtResource: (resource) => latest.current.pointsAtResource(resource),
       isResourceUrl: (url, resource) => latest.current.isResourceUrl(url, resource),
@@ -32,5 +34,19 @@ export function useChangedFilePageRefresh(
       reload: () => latest.current.reload(),
       navigate: (resource) => latest.current.navigate(resource)
     })
+    driveRef.current = drive
+    return () => {
+      drive.stop()
+      if (driveRef.current === drive) {
+        driveRef.current = null
+      }
+    }
   }, [intent, pageId])
+  // A failure the owner shows without a guest event (e.g. a preview whose grant failed) is judged too.
+  const failed = owner.guestFailed?.() ?? false
+  useEffect(() => {
+    if (failed) {
+      driveRef.current?.reevaluate()
+    }
+  }, [failed])
 }

@@ -1,8 +1,9 @@
 /**
  * Owner-side progress on one refresh intent. Freshness is proved only by a main-frame cross-document
  * navigation to the resource that started after the request and then committed. Renderer callbacks
- * arrive queued, so "after the request" is proved causally, never by callback time: the navigation
- * follows the owner's own reload/navigate, or its guest was registered after the request.
+ * arrive queued, so "after the request" is proved causally, never by callback time: either the guest
+ * was registered after the request, or the start arrives after the owner's own action, which the
+ * driver issues only once an IPC barrier has drained every guest event main sent before it.
  */
 export type ChangedFileRefreshPhase =
   /** Waiting to look at the guest (not ready yet, or a load just settled). */
@@ -19,13 +20,17 @@ export type ChangedFileRefreshTracker = {
   phase: ChangedFileRefreshPhase
   /** A main-frame start to the resource that started after the request was seen in this phase. */
   startedResource: boolean
+  /** The owner already reloaded or navigated this guest for the intent; there is no second try. */
+  acted: boolean
+  /** The owner already recovered a dead guest for the intent; a second death ends it. */
+  recovered: boolean
 }
 
 export type ChangedFileRefreshGuest = {
   generation: number
   /** Registered after the request, so each of its navigations started after it. */
   createdAfterRequest: boolean
-  /** `missing`: destroyed or dead guest; `not-ready`: alive but not yet answering. */
+  /** `missing`: a guest that attached and then died or failed; `not-ready`: alive or still attaching. */
   status: 'missing' | 'not-ready' | 'ready'
   /** The committed main-frame document is the requested resource. */
   showsResource: boolean
@@ -63,15 +68,26 @@ function result(
   return { tracker, action: null, outcome: null, reevaluate: false, ...extra }
 }
 
-function evaluate(seq: number, guest: ChangedFileRefreshGuest): ChangedFileRefreshStepResult {
-  const base = { seq, generation: guest.generation, startedResource: false }
-  if (guest.status === 'not-ready' || (guest.status === 'missing' && guest.createdAfterRequest)) {
-    // A newer-than-request guest still attaching will load on its own; its commit is judged then.
+function evaluate(
+  tracker: ChangedFileRefreshTracker,
+  guest: ChangedFileRefreshGuest
+): ChangedFileRefreshStepResult {
+  const sameGuest = guest.generation === tracker.generation
+  const base = {
+    ...tracker,
+    generation: guest.generation,
+    startedResource: false,
+    acted: sameGuest && tracker.acted
+  }
+  if (guest.status === 'not-ready') {
+    // Still attaching or before dom-ready: its first commit or readiness is judged then.
     return result({ ...base, phase: 'evaluate' })
   }
   if (guest.status === 'missing') {
-    // The page's reload entry routes a dead guest to recovery rather than a plain reload.
-    return result({ ...base, phase: 'proving' }, { action: 'reload' })
+    // One recovery through the page's reload entry; a guest that dies again ends the intent.
+    return tracker.recovered
+      ? result(null, { outcome: 'failed' })
+      : result({ ...base, phase: 'proving', recovered: true }, { action: 'reload' })
   }
   if (guest.showsResource && guest.createdAfterRequest) {
     return result(null, { outcome: 'satisfied' })
@@ -79,9 +95,13 @@ function evaluate(seq: number, guest: ChangedFileRefreshGuest): ChangedFileRefre
   if (guest.loadingMainFrame) {
     return result({ ...base, phase: guest.createdAfterRequest ? 'proving' : 'settling' })
   }
+  if (base.acted) {
+    // Our action already ran on this guest and it settled without a proving commit.
+    return result(null, { outcome: 'failed' })
+  }
   // Not the resource (doc-preview A navigated to sibling B): go back to A, since reload would refresh B.
   return result(
-    { ...base, phase: 'proving' },
+    { ...base, phase: 'proving', acted: true },
     { action: guest.showsResource ? 'reload' : 'navigate' }
   )
 }
@@ -91,13 +111,16 @@ export function changedFileRefreshStep(
   event: ChangedFileRefreshEvent
 ): ChangedFileRefreshStepResult {
   if (event.type === 'evaluate') {
-    return evaluate(tracker.seq, event.guest)
+    return evaluate(tracker, event.guest)
   }
   if (event.type === 'action-result') {
     if (event.result === 'failed') {
       return result(null, { outcome: 'failed' })
     }
-    return result(event.result === 'not-ready' ? { ...tracker, phase: 'evaluate' } : tracker)
+    // Not ready: the action never ran, so it does not use up the one attempt.
+    return result(
+      event.result === 'not-ready' ? { ...tracker, phase: 'evaluate', acted: false } : tracker
+    )
   }
   if (event.generation !== tracker.generation) {
     // Another guest's event; the owner re-evaluates on its own generation change.
@@ -119,7 +142,7 @@ export function changedFileRefreshStep(
       return result({ ...tracker, phase: 'evaluate' }, { reevaluate: true })
     }
     // The settled document is the committed one, even while its subresources still load.
-    return evaluate(tracker.seq, {
+    return evaluate(tracker, {
       generation: event.generation,
       createdAfterRequest: event.createdAfterRequest,
       status: 'ready',

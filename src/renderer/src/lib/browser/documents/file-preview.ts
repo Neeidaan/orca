@@ -109,23 +109,28 @@ export function canShowWorkspaceFileBrowserAction(
   return plan.status !== 'unsupported'
 }
 
+const NO_BROWSER_ACTION_INPUTS = {}
+
 export function useWorkspaceFileBrowserActionPredicate(
   worktreeId: string | null
 ): (filePath: string) => boolean {
   // Subscribe only to trigger rerenders; use the action’s live plan for visibility so the rules cannot drift and handlers retain stable identity.
   useAppStore(
-    useShallow((state) => ({
-      managedBrowser: worktreeId
-        ? getWorkspaceClientCreationActionPolicy(state, worktreeId)['managed-browser'].state
-        : null,
-      runtimeEnvironmentId: worktreeId
-        ? runtimeEnvironmentIdOrLocalUnlessTwin(state, worktreeId)
-        : null,
-      folderWorkspaces: selectFolderWorkspaces(state),
-      projectGroups: state.projectGroups,
-      repos: state.repos,
-      worktreesByRepo: selectWorktreesByRepo(state)
-    }))
+    useShallow((state) =>
+      // No workspace, no question: a row that never asks must not rerender on catalog changes.
+      worktreeId
+        ? {
+            managedBrowser: getWorkspaceClientCreationActionPolicy(state, worktreeId)[
+              'managed-browser'
+            ].state,
+            runtimeEnvironmentId: runtimeEnvironmentIdOrLocalUnlessTwin(state, worktreeId),
+            folderWorkspaces: selectFolderWorkspaces(state),
+            projectGroups: state.projectGroups,
+            repos: state.repos,
+            worktreesByRepo: selectWorktreesByRepo(state)
+          }
+        : NO_BROWSER_ACTION_INPUTS
+    )
   )
   return useCallback(
     (filePath: string) =>

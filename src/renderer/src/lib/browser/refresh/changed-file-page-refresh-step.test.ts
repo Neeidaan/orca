@@ -10,7 +10,9 @@ const start: ChangedFileRefreshTracker = {
   seq: 7,
   generation: 0,
   phase: 'evaluate',
-  startedResource: false
+  startedResource: false,
+  acted: false,
+  recovered: false
 }
 
 function guest(overrides: Partial<ChangedFileRefreshGuest> = {}): ChangedFileRefreshGuest {
@@ -125,6 +127,32 @@ describe('changedFileRefreshStep', () => {
     expect(run([{ type: 'evaluate', guest: guest({ status: 'missing' }) }]).actions).toEqual([
       'reload'
     ])
+  })
+
+  it('recovers a replacement guest that dies once, and fails if it dies again', () => {
+    const replacement = guest({ generation: 2, createdAfterRequest: true, status: 'missing' })
+    const first = changedFileRefreshStep(start, { type: 'evaluate', guest: replacement })
+    expect(first).toMatchObject({ action: 'reload', tracker: { recovered: true } })
+    const again = changedFileRefreshStep(first.tracker!, {
+      type: 'evaluate',
+      guest: { ...replacement, generation: 3 }
+    })
+    expect(again).toMatchObject({ tracker: null, outcome: 'failed', action: null })
+  })
+
+  it('waits for a guest that is still attaching instead of recovering it', () => {
+    const attaching = guest({ generation: 2, createdAfterRequest: true, status: 'not-ready' })
+    expect(changedFileRefreshStep(start, { type: 'evaluate', guest: attaching })).toMatchObject({
+      action: null,
+      tracker: { phase: 'evaluate' }
+    })
+  })
+
+  it('does not reload a guest twice when it settles without the proving commit', () => {
+    const decided = run([{ type: 'evaluate', guest: guest() }])
+    expect(
+      changedFileRefreshStep(decided.tracker!, { type: 'evaluate', guest: guest() })
+    ).toMatchObject({ tracker: null, outcome: 'failed', action: null })
   })
 
   it('is satisfied when a remounted guest first loads the resource after the request', () => {

@@ -1,6 +1,7 @@
 import { useAppStore } from '@/store/index'
 import {
   browserPageGuestIdentity,
+  noteBrowserPageGuestAttached,
   subscribeBrowserPageMainFrameEvents
 } from '@/components/browser-pane/host-guest/lifecycle/browser-page-main-frame-events'
 import type {
@@ -46,6 +47,20 @@ export function sameDocumentUrl(left: string, right: string): boolean {
   return normalize(left) === normalize(right)
 }
 
+/** Resolves once main has delivered every guest event it sent before this call: main sends guest
+ *  events and invoke replies to this renderer on one ordered channel. */
+function guestEventBarrier(pageId: string, webview: Electron.WebviewTag | null): Promise<unknown> {
+  let webContentsId = 0
+  try {
+    webContentsId = webview?.getWebContentsId() ?? 0
+  } catch {
+    // The reply still orders behind every event main already sent.
+  }
+  return Promise.resolve(
+    window.api.browser.getGuestMetadata({ browserPageId: pageId, webContentsId })
+  ).catch(() => null)
+}
+
 function readGuest(
   webview: Electron.WebviewTag | null,
   intent: ChangedFilePageRefreshIntent,
@@ -59,15 +74,21 @@ function readGuest(
     showsResource: false,
     loadingMainFrame: false
   }
+  // A failed preview (e.g. its grant could not be minted) may have no guest element at all.
+  if (owner.guestFailed?.()) {
+    return { ...guest, status: 'missing' }
+  }
   if (!webview || !identity) {
     return guest
   }
   try {
     webview.getWebContentsId()
+    noteBrowserPageGuestAttached(webview)
   } catch {
-    return { ...guest, status: 'missing' }
+    // Not yet attached is not dead; only a guest that attached and then went away needs recovery.
+    return { ...guest, status: identity.lifecycle === 'attaching' ? 'not-ready' : 'missing' }
   }
-  if (owner.guestFailed?.()) {
+  if (identity.lifecycle === 'gone' || webview.isCrashed()) {
     return { ...guest, status: 'missing' }
   }
   try {
@@ -84,19 +105,33 @@ function readGuest(
   }
 }
 
-/** Drives one intent until it is satisfied, dropped or failed; returns the stop for unmount or a newer seq. */
+export type ChangedFilePageRefreshDrive = {
+  stop: () => void
+  /** Look at the guest again after an owner-side change no guest event reports (e.g. a failed preview). */
+  reevaluate: () => void
+}
+
+/** Drives one intent until it is satisfied, dropped or failed. */
 export function driveChangedFilePageRefresh(
   pageId: string,
   intent: ChangedFilePageRefreshIntent,
-  owner: ChangedFilePageRefreshOwner
-): () => void {
+  owner: ChangedFilePageRefreshOwner,
+  barrier: (
+    pageId: string,
+    webview: Electron.WebviewTag | null
+  ) => Promise<unknown> = guestEventBarrier
+): ChangedFilePageRefreshDrive {
   let tracker: ChangedFileRefreshTracker = {
     seq: intent.seq,
     generation: 0,
     phase: 'evaluate',
-    startedResource: false
+    startedResource: false,
+    acted: false,
+    recovered: false
   }
   let stopped = false
+  // Events delivered while the barrier drains may predate the request; they are ignored.
+  let draining = false
   let unsubscribe = (): void => {}
   const isCurrent = (): boolean =>
     !stopped && useAppStore.getState().changedFileRefreshByPageId[pageId]?.seq === intent.seq
@@ -105,8 +140,22 @@ export function driveChangedFilePageRefresh(
     unsubscribe()
     useAppStore.getState().settleChangedFilePageRefresh(pageId, intent.seq)
   }
+  const evaluateNow = (webview = owner.readWebview()): void =>
+    run({ type: 'evaluate', guest: readGuest(webview, intent, owner) })
 
-  const apply = (step: ChangedFileRefreshStepResult, fenced = false): void => {
+  const act = (step: ChangedFileRefreshStepResult): void => {
+    const webview = owner.readWebview()
+    const generation = (webview && browserPageGuestIdentity(webview)?.generation) || 0
+    if (generation !== tracker.generation) {
+      // The guest changed since the decision; never act on the newer guest blindly.
+      evaluateNow(webview)
+      return
+    }
+    const result = step.action === 'reload' ? owner.reload() : owner.navigate(intent.resource)
+    run({ type: 'action-result', result })
+  }
+
+  const apply = (step: ChangedFileRefreshStepResult, afterBarrier: boolean): void => {
     if (!isCurrent()) {
       return
     }
@@ -114,35 +163,40 @@ export function driveChangedFilePageRefresh(
       finish()
       return
     }
+    if (step.action && !afterBarrier) {
+      // Drain queued events first, then decide again on what the guest shows now.
+      draining = true
+      void barrier(pageId, owner.readWebview()).then(() => {
+        draining = false
+        if (isCurrent()) {
+          apply(changedFileRefreshStep(tracker, guestSnapshot()), true)
+        }
+      })
+      return
+    }
     tracker = step.tracker
     if (step.action) {
-      const webview = owner.readWebview()
-      const generation = (webview && browserPageGuestIdentity(webview)?.generation) || 0
-      if (generation !== tracker.generation) {
-        // The guest changed since the step was decided; never act on the newer guest blindly.
-        if (!fenced) {
-          run({ type: 'evaluate', guest: readGuest(owner.readWebview(), intent, owner) }, true)
-        }
-        return
-      }
-      const result = step.action === 'reload' ? owner.reload() : owner.navigate(intent.resource)
-      run({ type: 'action-result', result }, fenced)
+      act(step)
       return
     }
     if (step.reevaluate) {
-      run({ type: 'evaluate', guest: readGuest(owner.readWebview(), intent, owner) }, fenced)
+      evaluateNow()
     }
   }
-  const run = (event: ChangedFileRefreshEvent, fenced = false): void => {
+  const guestSnapshot = (): ChangedFileRefreshEvent => ({
+    type: 'evaluate',
+    guest: readGuest(owner.readWebview(), intent, owner)
+  })
+  const run = (event: ChangedFileRefreshEvent, afterBarrier = false): void => {
     if (!owner.pointsAtResource(intent.resource)) {
       finish()
       return
     }
-    apply(changedFileRefreshStep(tracker, event), fenced)
+    apply(changedFileRefreshStep(tracker, event), afterBarrier)
   }
 
   unsubscribe = subscribeBrowserPageMainFrameEvents(pageId, (webview, event) => {
-    if (!isCurrent()) {
+    if (!isCurrent() || draining) {
       return
     }
     const identity = browserPageGuestIdentity(webview)
@@ -150,17 +204,17 @@ export function driveChangedFilePageRefresh(
       return
     }
     const newGuest = identity.generation !== tracker.generation
-    if (event.type === 'attached' || event.type === 'ready') {
+    if (event.type === 'attached' || event.type === 'ready' || event.type === 'gone') {
       // A same-guest rebind mid-proof must not issue a second reload.
-      if (newGuest || tracker.phase === 'evaluate') {
-        run({ type: 'evaluate', guest: readGuest(webview, intent, owner) })
+      if (newGuest || event.type === 'gone' || tracker.phase === 'evaluate') {
+        evaluateNow(webview)
       }
       return
     }
     if (newGuest) {
       // A remount, remint or recovery replaced the guest: judge the new one before its event.
-      run({ type: 'evaluate', guest: readGuest(webview, intent, owner) })
-      if (!isCurrent()) {
+      evaluateNow(webview)
+      if (!isCurrent() || draining) {
         return
       }
     }
@@ -176,9 +230,16 @@ export function driveChangedFilePageRefresh(
           }
     )
   })
-  run({ type: 'evaluate', guest: readGuest(owner.readWebview(), intent, owner) })
-  return () => {
-    stopped = true
-    unsubscribe()
+  evaluateNow()
+  return {
+    stop: () => {
+      stopped = true
+      unsubscribe()
+    },
+    reevaluate: () => {
+      if (isCurrent() && !draining) {
+        evaluateNow()
+      }
+    }
   }
 }
