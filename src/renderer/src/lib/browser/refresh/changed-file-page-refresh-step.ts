@@ -34,6 +34,8 @@ export type ChangedFileRefreshGuest = {
   status: 'missing' | 'not-ready' | 'ready'
   /** The committed main-frame document is the requested resource. */
   showsResource: boolean
+  /** The committed main-frame URL, to tell whether another navigation landed in between. */
+  committedUrl: string | null
   loadingMainFrame: boolean
 }
 
@@ -41,6 +43,8 @@ type GuestEvent = { generation: number; createdAfterRequest: boolean }
 
 export type ChangedFileRefreshEvent =
   | { type: 'evaluate'; guest: ChangedFileRefreshGuest }
+  /** The event barrier before an action drained; `before` was read just before it, after the request. */
+  | { type: 'barrier-passed'; before: ChangedFileRefreshGuest; after: ChangedFileRefreshGuest }
   /** did-start-navigation with isMainFrame && !isInPlace. */
   | ({ type: 'main-start'; toResource: boolean } & GuestEvent)
   /** did-navigate (main frame only). */
@@ -106,12 +110,44 @@ function evaluate(
   )
 }
 
+/** Events dropped while the barrier drained may be old, but what the guest shows now is not: a change
+ *  since `before` is a navigation the owner did not issue that began after the request, and it wins. */
+function afterBarrier(
+  tracker: ChangedFileRefreshTracker,
+  before: ChangedFileRefreshGuest,
+  after: ChangedFileRefreshGuest
+): ChangedFileRefreshStepResult {
+  const sameReadyGuest =
+    before.status === 'ready' && after.status === 'ready' && before.generation === after.generation
+  if (!sameReadyGuest) {
+    return evaluate(tracker, after)
+  }
+  if (after.loadingMainFrame && !before.loadingMainFrame) {
+    // Its start was dropped while draining but began after the request; its commit decides.
+    return result({
+      ...tracker,
+      generation: after.generation,
+      phase: 'proving',
+      startedResource: true
+    })
+  }
+  if (after.committedUrl !== before.committedUrl) {
+    return after.showsResource
+      ? result(null, { outcome: 'satisfied' })
+      : result(null, { outcome: 'dropped' })
+  }
+  return evaluate(tracker, after)
+}
+
 export function changedFileRefreshStep(
   tracker: ChangedFileRefreshTracker,
   event: ChangedFileRefreshEvent
 ): ChangedFileRefreshStepResult {
   if (event.type === 'evaluate') {
     return evaluate(tracker, event.guest)
+  }
+  if (event.type === 'barrier-passed') {
+    return afterBarrier(tracker, event.before, event.after)
   }
   if (event.type === 'action-result') {
     if (event.result === 'failed') {
@@ -147,6 +183,7 @@ export function changedFileRefreshStep(
       createdAfterRequest: event.createdAfterRequest,
       status: 'ready',
       showsResource: event.toResource,
+      committedUrl: null,
       loadingMainFrame: false
     })
   }

@@ -21,10 +21,13 @@ function guest(overrides: Partial<ChangedFileRefreshGuest> = {}): ChangedFileRef
     createdAfterRequest: false,
     status: 'ready',
     showsResource: true,
+    committedUrl: 'A',
     loadingMainFrame: false,
     ...overrides
   }
 }
+
+const showsB = { showsResource: false, committedUrl: 'B' }
 
 const onGuest1 = { generation: 1, createdAfterRequest: false }
 
@@ -170,6 +173,53 @@ describe('changedFileRefreshStep', () => {
       { type: 'main-commit', toResource: true, ...onGuest1 }
     ])
     expect(result).toMatchObject({ actions: ['navigate'], outcome: 'satisfied' })
+  })
+
+  describe('after the event barrier drains', () => {
+    // The driver applies the barrier result to the tracker it held before deciding.
+    const decided = start
+
+    it('acts as decided when nothing navigated meanwhile', () => {
+      expect(
+        changedFileRefreshStep(decided, { type: 'barrier-passed', before: guest(), after: guest() })
+      ).toMatchObject({ action: 'reload' })
+    })
+
+    it('lets a sibling the user opened meanwhile win when it already committed', () => {
+      expect(
+        changedFileRefreshStep(decided, {
+          type: 'barrier-passed',
+          before: guest(),
+          after: guest(showsB)
+        })
+      ).toMatchObject({ action: null, outcome: 'dropped', tracker: null })
+    })
+
+    it('lets a sibling the user opened meanwhile win when it is still loading', () => {
+      const waiting = changedFileRefreshStep(decided, {
+        type: 'barrier-passed',
+        before: guest(),
+        after: guest({ loadingMainFrame: true })
+      })
+      expect(waiting).toMatchObject({ action: null, tracker: { phase: 'proving' } })
+      expect(
+        changedFileRefreshStep(waiting.tracker!, {
+          type: 'main-commit',
+          toResource: false,
+          ...onGuest1
+        })
+      ).toMatchObject({ action: null, outcome: 'dropped' })
+    })
+
+    it('is satisfied when the newer navigation brought the guest back to the resource', () => {
+      expect(
+        changedFileRefreshStep(start, {
+          type: 'barrier-passed',
+          before: guest(showsB),
+          after: guest()
+        })
+      ).toMatchObject({ action: null, outcome: 'satisfied' })
+    })
   })
 
   it('drops the intent when the user navigates elsewhere while it is pending', () => {

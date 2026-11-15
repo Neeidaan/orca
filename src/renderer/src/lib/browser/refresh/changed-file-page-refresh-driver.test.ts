@@ -22,6 +22,7 @@ vi.mock('@/store/index', () => ({ useAppStore: { getState: () => store.state } }
 
 const PAGE = 'page-1'
 const FILE_URL = 'file:///repo/site/index.html'
+const SIBLING_URL = 'file:///repo/site/about.html'
 const resource: ChangedFilePageRefreshResource = { kind: 'local-file', url: FILE_URL }
 
 class FakeGuest extends EventTarget {
@@ -97,7 +98,10 @@ function deferredBarrier(): { barrier: () => Promise<unknown>; release: () => Pr
   }
 }
 
-function drive(guest: () => FakeGuest | null, options: { guestFailed?: () => boolean } = {}) {
+function drive(
+  guest: () => FakeGuest | null,
+  options: { guestFailed?: () => boolean; pointsAtResource?: () => boolean } = {}
+) {
   const reload = vi.fn((): ChangedFileRefreshActionResult => 'issued')
   const navigate = vi.fn((): ChangedFileRefreshActionResult => 'issued')
   const gate = deferredBarrier()
@@ -109,7 +113,7 @@ function drive(guest: () => FakeGuest | null, options: { guestFailed?: () => boo
         const current = guest()
         return current ? asWebview(current) : null
       },
-      pointsAtResource: () => true,
+      pointsAtResource: options.pointsAtResource ?? (() => true),
       isResourceUrl: (url) => sameDocumentUrl(url, FILE_URL),
       ...(options.guestFailed ? { guestFailed: options.guestFailed } : {}),
       reload,
@@ -156,6 +160,53 @@ describe('changed-file page refresh driver', () => {
     expect(pending()).toBe(true)
     guest.start(FILE_URL)
     guest.commit(FILE_URL)
+    expect(pending()).toBe(false)
+  })
+
+  it('navigates a guest that shows a sibling back to the requested file', async () => {
+    const guest = newGuest({ url: SIBLING_URL })
+    state.requestChangedFilePageRefresh(PAGE, resource)
+    const { reload, navigate, release } = drive(() => guest)
+    await release()
+    expect(navigate).toHaveBeenCalledTimes(1)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('keeps a sibling the user opened while the barrier drained, once it committed', async () => {
+    const guest = newGuest()
+    state.requestChangedFilePageRefresh(PAGE, resource)
+    const { reload, navigate, release } = drive(() => guest)
+    guest.start(SIBLING_URL)
+    guest.commit(SIBLING_URL)
+    await release()
+    expect(reload).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(pending()).toBe(false)
+  })
+
+  it('keeps a sibling the user opened while the barrier drained, while it still loads', async () => {
+    const guest = newGuest()
+    state.requestChangedFilePageRefresh(PAGE, resource)
+    const { reload, navigate, release } = drive(() => guest)
+    guest.start(SIBLING_URL)
+    guest.loading = true
+    await release()
+    expect(pending()).toBe(true)
+    guest.loading = false
+    guest.commit(SIBLING_URL)
+    expect(reload).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(pending()).toBe(false)
+  })
+
+  it('does not act after the barrier when the page no longer names the file', async () => {
+    let pointsAtFile = true
+    const guest = newGuest()
+    state.requestChangedFilePageRefresh(PAGE, resource)
+    const { reload, release } = drive(() => guest, { pointsAtResource: () => pointsAtFile })
+    pointsAtFile = false
+    await release()
+    expect(reload).not.toHaveBeenCalled()
     expect(pending()).toBe(false)
   })
 

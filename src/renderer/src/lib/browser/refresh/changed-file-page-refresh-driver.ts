@@ -72,6 +72,7 @@ function readGuest(
     createdAfterRequest: identity ? identity.registeredAt > intent.requestedAt : false,
     status: 'not-ready',
     showsResource: false,
+    committedUrl: null,
     loadingMainFrame: false
   }
   // A failed preview (e.g. its grant could not be minted) may have no guest element at all.
@@ -97,6 +98,7 @@ function readGuest(
       ...guest,
       status: 'ready',
       showsResource: Boolean(url) && owner.isResourceUrl(url, intent.resource),
+      committedUrl: url || null,
       loadingMainFrame: webview.isLoadingMainFrame()
     }
   } catch {
@@ -164,12 +166,20 @@ export function driveChangedFilePageRefresh(
       return
     }
     if (step.action && !afterBarrier) {
-      // Drain queued events first, then decide again on what the guest shows now.
+      // Drain queued events first, then compare what the guest shows now with what it showed here.
+      const before = readGuest(owner.readWebview(), intent, owner)
       draining = true
       void barrier(pageId, owner.readWebview()).then(() => {
         draining = false
         if (isCurrent()) {
-          apply(changedFileRefreshStep(tracker, guestSnapshot()), true)
+          run(
+            {
+              type: 'barrier-passed',
+              before,
+              after: readGuest(owner.readWebview(), intent, owner)
+            },
+            true
+          )
         }
       })
       return
@@ -183,10 +193,6 @@ export function driveChangedFilePageRefresh(
       evaluateNow()
     }
   }
-  const guestSnapshot = (): ChangedFileRefreshEvent => ({
-    type: 'evaluate',
-    guest: readGuest(owner.readWebview(), intent, owner)
-  })
   const run = (event: ChangedFileRefreshEvent, afterBarrier = false): void => {
     if (!owner.pointsAtResource(intent.resource)) {
       finish()
