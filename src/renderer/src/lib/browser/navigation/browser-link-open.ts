@@ -2,6 +2,7 @@ import { focusOpenedBrowserLink } from './browser-link-focus'
 import { releaseBrowserPageMount } from '@/components/browser-pane/host-guest/retention/browser-page-mount-admission'
 import { createBrowserLinkHostMatcher } from './browser-link-owner'
 import { useAppStore } from '@/store/index'
+import { requestChangedFilePageRefresh } from '../refresh/request-changed-file-page-refresh'
 import { activateBrowserWorkspaceTab } from '../workspace/browser-workspace-tab-activation'
 import {
   browserLinkPageMatches,
@@ -31,7 +32,7 @@ function requestReusedPageRefresh(
 ): void {
   // A website is not a changed file; only file and document pages are refreshed.
   if (resource.kind !== 'website') {
-    useAppStore.getState().requestChangedFilePageRefresh(pageId, resource)
+    requestChangedFilePageRefresh(pageId, resource)
   }
 }
 

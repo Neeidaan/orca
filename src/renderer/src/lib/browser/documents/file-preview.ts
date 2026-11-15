@@ -18,6 +18,7 @@ import {
 } from '@/lib/browser/documents/workspace-file-browser-open-target'
 import { useAppStore } from '@/store/index'
 import { sideGroupPlacement } from './side-group-placement'
+import { requestChangedFilePageRefresh } from '../refresh/request-changed-file-page-refresh'
 import '../../../../../shared/orca-profiles/constants'
 import { ORCA_BROWSER_BLANK_URL } from '../../../../../shared/browser/browser-blank-page'
 import {
@@ -180,7 +181,7 @@ function openDocPreviewTab(
       state.setActiveBrowserPage(existing.workspaceId, existing.pageId)
     }
     if (params.refreshReusedPage) {
-      state.requestChangedFilePageRefresh(existing.pageId, { kind: 'document', docLocation })
+      requestChangedFilePageRefresh(existing.pageId, { kind: 'document', docLocation })
     }
     return
   }

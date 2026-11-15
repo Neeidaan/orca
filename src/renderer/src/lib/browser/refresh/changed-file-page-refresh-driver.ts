@@ -47,20 +47,6 @@ export function sameDocumentUrl(left: string, right: string): boolean {
   return normalize(left) === normalize(right)
 }
 
-/** Resolves once main has delivered every guest event it sent before this call: main sends guest
- *  events and invoke replies to this renderer on one ordered channel. */
-function guestEventBarrier(pageId: string, webview: Electron.WebviewTag | null): Promise<unknown> {
-  let webContentsId = 0
-  try {
-    webContentsId = webview?.getWebContentsId() ?? 0
-  } catch {
-    // The reply still orders behind every event main already sent.
-  }
-  return Promise.resolve(
-    window.api.browser.getGuestMetadata({ browserPageId: pageId, webContentsId })
-  ).catch(() => null)
-}
-
 function readGuest(
   webview: Electron.WebviewTag | null,
   intent: ChangedFilePageRefreshIntent,
@@ -72,7 +58,6 @@ function readGuest(
     createdAfterRequest: identity ? identity.registeredAt > intent.requestedAt : false,
     status: 'not-ready',
     showsResource: false,
-    committedUrl: null,
     loadingMainFrame: false
   }
   // A failed preview (e.g. its grant could not be minted) may have no guest element at all.
@@ -98,7 +83,6 @@ function readGuest(
       ...guest,
       status: 'ready',
       showsResource: Boolean(url) && owner.isResourceUrl(url, intent.resource),
-      committedUrl: url || null,
       loadingMainFrame: webview.isLoadingMainFrame()
     }
   } catch {
@@ -113,16 +97,17 @@ export type ChangedFilePageRefreshDrive = {
   reevaluate: () => void
 }
 
-/** Drives one intent until it is satisfied, dropped or failed. */
+/** Drives one intent until it is satisfied, dropped or failed; it waits until the intent has its baseline. */
 export function driveChangedFilePageRefresh(
   pageId: string,
   intent: ChangedFilePageRefreshIntent,
-  owner: ChangedFilePageRefreshOwner,
-  barrier: (
-    pageId: string,
-    webview: Electron.WebviewTag | null
-  ) => Promise<unknown> = guestEventBarrier
+  owner: ChangedFilePageRefreshOwner
 ): ChangedFilePageRefreshDrive {
+  const baselineSeq = intent.baselineSeq
+  if (baselineSeq === undefined) {
+    // The hook starts a new drive when the baseline lands on the intent.
+    return { stop: () => {}, reevaluate: () => {} }
+  }
   let tracker: ChangedFileRefreshTracker = {
     seq: intent.seq,
     generation: 0,
@@ -132,8 +117,6 @@ export function driveChangedFilePageRefresh(
     recovered: false
   }
   let stopped = false
-  // Events delivered while the barrier drains may predate the request; they are ignored.
-  let draining = false
   let unsubscribe = (): void => {}
   const isCurrent = (): boolean =>
     !stopped && useAppStore.getState().changedFileRefreshByPageId[pageId]?.seq === intent.seq
@@ -145,19 +128,7 @@ export function driveChangedFilePageRefresh(
   const evaluateNow = (webview = owner.readWebview()): void =>
     run({ type: 'evaluate', guest: readGuest(webview, intent, owner) })
 
-  const act = (step: ChangedFileRefreshStepResult): void => {
-    const webview = owner.readWebview()
-    const generation = (webview && browserPageGuestIdentity(webview)?.generation) || 0
-    if (generation !== tracker.generation) {
-      // The guest changed since the decision; never act on the newer guest blindly.
-      evaluateNow(webview)
-      return
-    }
-    const result = step.action === 'reload' ? owner.reload() : owner.navigate(intent.resource)
-    run({ type: 'action-result', result })
-  }
-
-  const apply = (step: ChangedFileRefreshStepResult, afterBarrier: boolean): void => {
+  const apply = (step: ChangedFileRefreshStepResult): void => {
     if (!isCurrent()) {
       return
     }
@@ -165,44 +136,33 @@ export function driveChangedFilePageRefresh(
       finish()
       return
     }
-    if (step.action && !afterBarrier) {
-      // Drain queued events first, then compare what the guest shows now with what it showed here.
-      const before = readGuest(owner.readWebview(), intent, owner)
-      draining = true
-      void barrier(pageId, owner.readWebview()).then(() => {
-        draining = false
-        if (isCurrent()) {
-          run(
-            {
-              type: 'barrier-passed',
-              before,
-              after: readGuest(owner.readWebview(), intent, owner)
-            },
-            true
-          )
-        }
-      })
-      return
-    }
     tracker = step.tracker
     if (step.action) {
-      act(step)
+      const webview = owner.readWebview()
+      const generation = (webview && browserPageGuestIdentity(webview)?.generation) || 0
+      if (generation !== tracker.generation) {
+        // The guest changed since the decision; never act on the newer guest blindly.
+        evaluateNow(webview)
+        return
+      }
+      const result = step.action === 'reload' ? owner.reload() : owner.navigate(intent.resource)
+      run({ type: 'action-result', result })
       return
     }
     if (step.reevaluate) {
       evaluateNow()
     }
   }
-  const run = (event: ChangedFileRefreshEvent, afterBarrier = false): void => {
+  const run = (event: ChangedFileRefreshEvent): void => {
     if (!owner.pointsAtResource(intent.resource)) {
       finish()
       return
     }
-    apply(changedFileRefreshStep(tracker, event), afterBarrier)
+    apply(changedFileRefreshStep(tracker, event))
   }
 
   unsubscribe = subscribeBrowserPageMainFrameEvents(pageId, (webview, event) => {
-    if (!isCurrent() || draining) {
+    if (!isCurrent()) {
       return
     }
     const identity = browserPageGuestIdentity(webview)
@@ -220,20 +180,28 @@ export function driveChangedFilePageRefresh(
     if (newGuest) {
       // A remount, remint or recovery replaced the guest: judge the new one before its event.
       evaluateNow(webview)
-      if (!isCurrent() || draining) {
+      if (!isCurrent()) {
         return
       }
     }
-    const createdAfterRequest = identity.registeredAt > intent.requestedAt
+    const guestEvent = {
+      generation: identity.generation,
+      createdAfterRequest: identity.registeredAt > intent.requestedAt
+    }
+    if (event.type === 'fail') {
+      run({ type: 'main-fail', ...guestEvent })
+      return
+    }
+    const toResource = owner.isResourceUrl(event.url, intent.resource)
     run(
-      event.type === 'fail'
-        ? { type: 'main-fail', generation: identity.generation, createdAfterRequest }
-        : {
-            type: event.type === 'start' ? 'main-start' : 'main-commit',
-            generation: identity.generation,
-            createdAfterRequest,
-            toResource: owner.isResourceUrl(event.url, intent.resource)
+      event.type === 'start'
+        ? {
+            type: 'main-start',
+            ...guestEvent,
+            toResource,
+            postRequest: event.seq > baselineSeq || guestEvent.createdAfterRequest
           }
+        : { type: 'main-commit', ...guestEvent, toResource }
     )
   })
   evaluateNow()
@@ -243,7 +211,7 @@ export function driveChangedFilePageRefresh(
       unsubscribe()
     },
     reevaluate: () => {
-      if (isCurrent() && !draining) {
+      if (isCurrent()) {
         evaluateNow()
       }
     }

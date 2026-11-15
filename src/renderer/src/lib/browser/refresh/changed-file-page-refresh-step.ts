@@ -1,16 +1,20 @@
 /**
  * Owner-side progress on one refresh intent. Freshness is proved only by a main-frame cross-document
- * navigation to the resource that started after the request and then committed. Renderer callbacks
- * arrive queued, so "after the request" is proved causally, never by callback time: either the guest
- * was registered after the request, or the start arrives after the owner's own action, which the
- * driver issues only once an IPC barrier has drained every guest event main sent before it.
+ * navigation to the resource that started after the request and then committed.
+ *
+ * "After the request" is causal, never callback time. When the intent is recorded, one IPC round trip
+ * to main fixes a baseline: main delivers a guest's events and invoke replies to this renderer on one
+ * ordered channel, so every event it sent before the reply arrives before the baseline is taken. Each
+ * main-frame start the renderer receives gets a page-level sequence number; a start numbered after the
+ * baseline, or from a guest registered after the request, is a post-request navigation (the owner's own
+ * action, or a newer one the user or page started, which wins). In-place navigations are not starts.
  */
 export type ChangedFileRefreshPhase =
   /** Waiting to look at the guest (not ready yet, or a load just settled). */
   | 'evaluate'
-  /** A main-frame load that may predate the request is in flight; act once it commits or fails. */
+  /** A main-frame load from before the request is in flight; act once it commits or fails. */
   | 'settling'
-  /** The owner acted, or the guest is newer than the request; waiting for the proving commit. */
+  /** A post-request navigation to the resource (ours or not) is under way; its commit proves freshness. */
   | 'proving'
 
 export type ChangedFileRefreshTracker = {
@@ -18,7 +22,7 @@ export type ChangedFileRefreshTracker = {
   /** The guest the phase applies to; events from another guest are stale. */
   generation: number
   phase: ChangedFileRefreshPhase
-  /** A main-frame start to the resource that started after the request was seen in this phase. */
+  /** A post-request main-frame start to the resource was seen on this guest. */
   startedResource: boolean
   /** The owner already reloaded or navigated this guest for the intent; there is no second try. */
   acted: boolean
@@ -34,8 +38,6 @@ export type ChangedFileRefreshGuest = {
   status: 'missing' | 'not-ready' | 'ready'
   /** The committed main-frame document is the requested resource. */
   showsResource: boolean
-  /** The committed main-frame URL, to tell whether another navigation landed in between. */
-  committedUrl: string | null
   loadingMainFrame: boolean
 }
 
@@ -43,10 +45,8 @@ type GuestEvent = { generation: number; createdAfterRequest: boolean }
 
 export type ChangedFileRefreshEvent =
   | { type: 'evaluate'; guest: ChangedFileRefreshGuest }
-  /** The event barrier before an action drained; `before` was read just before it, after the request. */
-  | { type: 'barrier-passed'; before: ChangedFileRefreshGuest; after: ChangedFileRefreshGuest }
-  /** did-start-navigation with isMainFrame && !isInPlace. */
-  | ({ type: 'main-start'; toResource: boolean } & GuestEvent)
+  /** did-start-navigation with isMainFrame && !isInPlace; `postRequest` per the baseline above. */
+  | ({ type: 'main-start'; toResource: boolean; postRequest: boolean } & GuestEvent)
   /** did-navigate (main frame only). */
   | ({ type: 'main-commit'; toResource: boolean } & GuestEvent)
   /** Main-frame did-fail-load other than an abort (-3). */
@@ -80,7 +80,7 @@ function evaluate(
   const base = {
     ...tracker,
     generation: guest.generation,
-    startedResource: false,
+    startedResource: sameGuest && tracker.startedResource,
     acted: sameGuest && tracker.acted
   }
   if (guest.status === 'not-ready') {
@@ -93,50 +93,24 @@ function evaluate(
       ? result(null, { outcome: 'failed' })
       : result({ ...base, phase: 'proving', recovered: true }, { action: 'reload' })
   }
-  if (guest.showsResource && guest.createdAfterRequest) {
+  if (guest.showsResource && (guest.createdAfterRequest || base.startedResource)) {
     return result(null, { outcome: 'satisfied' })
   }
   if (guest.loadingMainFrame) {
-    return result({ ...base, phase: guest.createdAfterRequest ? 'proving' : 'settling' })
+    return result({
+      ...base,
+      phase: guest.createdAfterRequest || base.startedResource ? 'proving' : 'settling'
+    })
   }
   if (base.acted) {
     // Our action already ran on this guest and it settled without a proving commit.
     return result(null, { outcome: 'failed' })
   }
-  // Not the resource (doc-preview A navigated to sibling B): go back to A, since reload would refresh B.
+  // Not the resource (doc-preview A navigated to sibling B before the request): go back to A.
   return result(
     { ...base, phase: 'proving', acted: true },
     { action: guest.showsResource ? 'reload' : 'navigate' }
   )
-}
-
-/** Events dropped while the barrier drained may be old, but what the guest shows now is not: a change
- *  since `before` is a navigation the owner did not issue that began after the request, and it wins. */
-function afterBarrier(
-  tracker: ChangedFileRefreshTracker,
-  before: ChangedFileRefreshGuest,
-  after: ChangedFileRefreshGuest
-): ChangedFileRefreshStepResult {
-  const sameReadyGuest =
-    before.status === 'ready' && after.status === 'ready' && before.generation === after.generation
-  if (!sameReadyGuest) {
-    return evaluate(tracker, after)
-  }
-  if (after.loadingMainFrame && !before.loadingMainFrame) {
-    // Its start was dropped while draining but began after the request; its commit decides.
-    return result({
-      ...tracker,
-      generation: after.generation,
-      phase: 'proving',
-      startedResource: true
-    })
-  }
-  if (after.committedUrl !== before.committedUrl) {
-    return after.showsResource
-      ? result(null, { outcome: 'satisfied' })
-      : result(null, { outcome: 'dropped' })
-  }
-  return evaluate(tracker, after)
 }
 
 export function changedFileRefreshStep(
@@ -145,9 +119,6 @@ export function changedFileRefreshStep(
 ): ChangedFileRefreshStepResult {
   if (event.type === 'evaluate') {
     return evaluate(tracker, event.guest)
-  }
-  if (event.type === 'barrier-passed') {
-    return afterBarrier(tracker, event.before, event.after)
   }
   if (event.type === 'action-result') {
     if (event.result === 'failed') {
@@ -164,26 +135,26 @@ export function changedFileRefreshStep(
   }
   const { phase } = tracker
   if (event.type === 'main-start') {
+    if (!event.postRequest) {
+      // Delivered before the baseline: it began before the request and proves nothing.
+      return result(tracker)
+    }
     if (!event.toResource) {
-      // The user's navigation elsewhere wins; a not-ready guest's restored sibling is judged at commit.
+      // A newer navigation elsewhere wins; a not-ready guest's own first load is judged at commit.
       return phase === 'evaluate' ? result(tracker) : result(null, { outcome: 'dropped' })
     }
-    // Otherwise the start may be queued from before the request, so it proves nothing.
-    return phase === 'proving' || event.createdAfterRequest
-      ? result({ ...tracker, phase: 'proving', startedResource: true })
-      : result(tracker)
+    return result({ ...tracker, phase: 'proving', startedResource: true })
   }
   if (phase !== 'proving') {
     if (event.type === 'main-fail') {
       return result({ ...tracker, phase: 'evaluate' }, { reevaluate: true })
     }
-    // The settled document is the committed one, even while its subresources still load.
+    // A pre-request load committed: judge the document it left, even while subresources still load.
     return evaluate(tracker, {
       generation: event.generation,
       createdAfterRequest: event.createdAfterRequest,
       status: 'ready',
       showsResource: event.toResource,
-      committedUrl: null,
       loadingMainFrame: false
     })
   }

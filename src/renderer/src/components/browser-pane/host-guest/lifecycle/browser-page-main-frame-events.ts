@@ -1,6 +1,7 @@
 /** Main-frame document lifecycle only: iframe loads and in-page navigations never appear here. */
 export type BrowserPageMainFrameEvent =
-  | { type: 'start'; url: string }
+  /** `seq`: the page's main-frame start count when this start was received (see browserPageNavigationSeq). */
+  | { type: 'start'; url: string; seq: number }
   | { type: 'commit'; url: string }
   | { type: 'fail' }
   | { type: 'ready' }
@@ -21,6 +22,12 @@ export type BrowserPageGuestIdentity = {
 type Listener = (webview: Electron.WebviewTag, event: BrowserPageMainFrameEvent) => void
 
 const listenersByPageId = new Map<string, Set<Listener>>()
+const navigationSeqByPageId = new Map<string, number>()
+
+/** How many main-frame cross-document starts this renderer has received for the page, from any guest. */
+export function browserPageNavigationSeq(pageId: string): number {
+  return navigationSeqByPageId.get(pageId) ?? 0
+}
 const guestIdentities = new WeakMap<Electron.WebviewTag, BrowserPageGuestIdentity>()
 let nextGeneration = 1
 
@@ -88,7 +95,9 @@ export function observeBrowserPageMainFrameEvents(
   const onStart = (event: Electron.DidStartNavigationEvent): void => {
     // Same filter as the page's navigation handlers; did-start-loading would include iframes.
     if (event.isMainFrame && !event.isInPlace && event.url) {
-      emit(pageId, webview, { type: 'start', url: event.url })
+      const seq = browserPageNavigationSeq(pageId) + 1
+      navigationSeqByPageId.set(pageId, seq)
+      emit(pageId, webview, { type: 'start', url: event.url, seq })
     }
   }
   // Electron's did-navigate is main-frame only; in-page navigations use did-navigate-in-page.

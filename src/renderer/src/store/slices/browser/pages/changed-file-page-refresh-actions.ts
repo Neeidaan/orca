@@ -8,13 +8,33 @@ let nextRefreshSeq = 1
 
 export function createChangedFilePageRefreshActions(
   set: RefreshStateSet
-): Pick<BrowserSlice, 'requestChangedFilePageRefresh' | 'settleChangedFilePageRefresh'> {
+): Pick<
+  BrowserSlice,
+  | 'requestChangedFilePageRefresh'
+  | 'setChangedFilePageRefreshBaseline'
+  | 'settleChangedFilePageRefresh'
+> {
   return {
     requestChangedFilePageRefresh: (pageId, resource) => {
       const intent = { seq: nextRefreshSeq++, requestedAt: performance.now(), resource }
       set((s) => ({
         changedFileRefreshByPageId: { ...s.changedFileRefreshByPageId, [pageId]: intent }
       }))
+      return intent.seq
+    },
+    setChangedFilePageRefreshBaseline: (pageId, seq, baselineSeq) => {
+      set((s) => {
+        const intent = s.changedFileRefreshByPageId[pageId]
+        if (intent?.seq !== seq || intent.baselineSeq !== undefined) {
+          return {}
+        }
+        return {
+          changedFileRefreshByPageId: {
+            ...s.changedFileRefreshByPageId,
+            [pageId]: { ...intent, baselineSeq }
+          }
+        }
+      })
     },
     settleChangedFilePageRefresh: (pageId, seq) => {
       set((s) => {

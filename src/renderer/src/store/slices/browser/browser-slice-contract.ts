@@ -128,7 +128,12 @@ export type BrowserSlice = {
   browserCertificateFailuresByPageId: Record<string, BrowserCertificateFailure>
   /** Explicit reopens a page's owner still has to show fresh; cleared on settle, close or conversion. */
   changedFileRefreshByPageId: Record<string, ChangedFilePageRefreshIntent>
-  requestChangedFilePageRefresh: (pageId: string, resource: ChangedFilePageRefreshResource) => void
+  /** Records the intent and returns its seq; callers use requestChangedFilePageRefresh in lib/browser/refresh. */
+  requestChangedFilePageRefresh: (
+    pageId: string,
+    resource: ChangedFilePageRefreshResource
+  ) => number
+  setChangedFilePageRefreshBaseline: (pageId: string, seq: number, baselineSeq: number) => void
   /** Clears the intent only while `seq` is still the page's latest request. */
   settleChangedFilePageRefresh: (pageId: string, seq: number) => void
   /** May precede the page record (client-hosted pages); main's false on guest teardown clears it. */

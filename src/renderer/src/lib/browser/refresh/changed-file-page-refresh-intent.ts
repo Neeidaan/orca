@@ -11,4 +11,7 @@ export type ChangedFilePageRefreshIntent = {
   /** performance.now() at request time, comparable with guest registration times. */
   requestedAt: number
   resource: ChangedFilePageRefreshResource
+  /** The page's navigation count once main had delivered every guest event sent before the request;
+   *  unset until that round trip returns, and the owner does not act before it. */
+  baselineSeq?: number
 }

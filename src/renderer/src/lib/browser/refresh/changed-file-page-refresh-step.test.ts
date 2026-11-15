@@ -21,13 +21,10 @@ function guest(overrides: Partial<ChangedFileRefreshGuest> = {}): ChangedFileRef
     createdAfterRequest: false,
     status: 'ready',
     showsResource: true,
-    committedUrl: 'A',
     loadingMainFrame: false,
     ...overrides
   }
 }
-
-const showsB = { showsResource: false, committedUrl: 'B' }
 
 const onGuest1 = { generation: 1, createdAfterRequest: false }
 
@@ -70,7 +67,7 @@ describe('changedFileRefreshStep', () => {
   it('is satisfied by its reload starting and committing to the resource', () => {
     const result = run([
       { type: 'evaluate', guest: guest() },
-      { type: 'main-start', toResource: true, ...onGuest1 },
+      { type: 'main-start', postRequest: true, toResource: true, ...onGuest1 },
       { type: 'main-commit', toResource: true, ...onGuest1 }
     ])
     expect(result).toMatchObject({ actions: ['reload'], outcome: 'satisfied', tracker: null })
@@ -79,8 +76,8 @@ describe('changedFileRefreshStep', () => {
   it('reloads after a load that started before the request commits', () => {
     const result = run([
       { type: 'evaluate', guest: guest({ loadingMainFrame: true }) },
-      // Queued from before the request: it proves nothing.
-      { type: 'main-start', toResource: true, ...onGuest1 },
+      // Delivered before the baseline: it proves nothing.
+      { type: 'main-start', postRequest: false, toResource: true, ...onGuest1 },
       { type: 'main-commit', toResource: true, ...onGuest1 }
     ])
     expect(result.actions).toEqual(['reload'])
@@ -91,7 +88,7 @@ describe('changedFileRefreshStep', () => {
     const fresh = { generation: 2, createdAfterRequest: true }
     const result = run([
       { type: 'evaluate', guest: guest({ ...fresh, status: 'not-ready' }) },
-      { type: 'main-start', toResource: true, ...fresh },
+      { type: 'main-start', postRequest: true, toResource: true, ...fresh },
       { type: 'main-commit', toResource: true, ...fresh }
     ])
     expect(result).toMatchObject({ actions: [], outcome: 'satisfied', tracker: null })
@@ -169,63 +166,45 @@ describe('changedFileRefreshStep', () => {
   it('navigates back to the resource when the guest shows a sibling document, not reload', () => {
     const result = run([
       { type: 'evaluate', guest: guest({ showsResource: false }) },
-      { type: 'main-start', toResource: true, ...onGuest1 },
+      { type: 'main-start', postRequest: true, toResource: true, ...onGuest1 },
       { type: 'main-commit', toResource: true, ...onGuest1 }
     ])
     expect(result).toMatchObject({ actions: ['navigate'], outcome: 'satisfied' })
   })
 
-  describe('after the event barrier drains', () => {
-    // The driver applies the barrier result to the tracker it held before deciding.
-    const decided = start
-
-    it('acts as decided when nothing navigated meanwhile', () => {
-      expect(
-        changedFileRefreshStep(decided, { type: 'barrier-passed', before: guest(), after: guest() })
-      ).toMatchObject({ action: 'reload' })
-    })
-
-    it('lets a sibling the user opened meanwhile win when it already committed', () => {
-      expect(
-        changedFileRefreshStep(decided, {
-          type: 'barrier-passed',
-          before: guest(),
-          after: guest(showsB)
-        })
-      ).toMatchObject({ action: null, outcome: 'dropped', tracker: null })
-    })
-
-    it('lets a sibling the user opened meanwhile win when it is still loading', () => {
-      const waiting = changedFileRefreshStep(decided, {
-        type: 'barrier-passed',
-        before: guest(),
-        after: guest({ loadingMainFrame: true })
+  it('ignores a start delivered before the baseline, even to another document', () => {
+    const settling = run([{ type: 'evaluate', guest: guest({ loadingMainFrame: true }) }])
+    expect(
+      changedFileRefreshStep(settling.tracker!, {
+        type: 'main-start',
+        toResource: false,
+        postRequest: false,
+        ...onGuest1
       })
-      expect(waiting).toMatchObject({ action: null, tracker: { phase: 'proving' } })
-      expect(
-        changedFileRefreshStep(waiting.tracker!, {
-          type: 'main-commit',
-          toResource: false,
-          ...onGuest1
-        })
-      ).toMatchObject({ action: null, outcome: 'dropped' })
-    })
+    ).toMatchObject({ outcome: null, tracker: settling.tracker })
+  })
 
-    it('is satisfied when the newer navigation brought the guest back to the resource', () => {
-      expect(
-        changedFileRefreshStep(start, {
-          type: 'barrier-passed',
-          before: guest(showsB),
-          after: guest()
-        })
-      ).toMatchObject({ action: null, outcome: 'satisfied' })
-    })
+  it('drops the intent when a post-request navigation elsewhere starts while a pre-request load settles', () => {
+    const result = run([
+      { type: 'evaluate', guest: guest({ loadingMainFrame: true }) },
+      { type: 'main-start', toResource: false, postRequest: true, ...onGuest1 }
+    ])
+    expect(result).toMatchObject({ actions: [], outcome: 'dropped', tracker: null })
+  })
+
+  it('is satisfied without action by a post-request load of the resource it did not issue', () => {
+    const result = run([
+      { type: 'evaluate', guest: guest({ loadingMainFrame: true }) },
+      { type: 'main-start', toResource: true, postRequest: true, ...onGuest1 },
+      { type: 'main-commit', toResource: true, ...onGuest1 }
+    ])
+    expect(result).toMatchObject({ actions: [], outcome: 'satisfied', tracker: null })
   })
 
   it('drops the intent when the user navigates elsewhere while it is pending', () => {
     const result = run([
       { type: 'evaluate', guest: guest() },
-      { type: 'main-start', toResource: false, ...onGuest1 }
+      { type: 'main-start', postRequest: true, toResource: false, ...onGuest1 }
     ])
     expect(result).toMatchObject({ outcome: 'dropped', tracker: null })
   })
@@ -254,7 +233,7 @@ describe('changedFileRefreshStep', () => {
   it('clears after one failed main-frame attempt, with no retry', () => {
     const result = run([
       { type: 'evaluate', guest: guest() },
-      { type: 'main-start', toResource: true, ...onGuest1 },
+      { type: 'main-start', postRequest: true, toResource: true, ...onGuest1 },
       { type: 'main-fail', ...onGuest1 }
     ])
     expect(result).toMatchObject({ actions: ['reload'], outcome: 'failed', tracker: null })
