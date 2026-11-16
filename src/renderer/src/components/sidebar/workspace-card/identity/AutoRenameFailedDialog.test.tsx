@@ -7,7 +7,7 @@ import { AutoRenameFailedDialog } from './AutoRenameFailedDialog'
 import { useAppStore } from '@/store'
 import type { AppState } from '@/store/types'
 import { makeWorktree } from '@/store/slices/worktrees/worktree.test-fixture'
-import type { ExecutionHostId } from '../../../../../../shared/execution-host'
+import type { ExecutionHostId } from '../../../../../../shared/execution-host/execution-host'
 import type {
   BranchAutoRenameAttemptEvent,
   BranchAutoRenameRetryResult

@@ -1,5 +1,5 @@
 import { getRepoIdFromWorktreeId } from '../../../shared/worktree/id'
-import { getRepoExecutionHostId } from '../../../shared/execution-host'
+import { getRepoExecutionHostId } from '../../../shared/execution-host/execution-host'
 import { resolveGitRouteForHost } from '../../providers/execution-host-provider-dispatch'
 import { probeBranchUpstream, type GitExec } from '../../git/worktrees/checkout/branch-rename'
 import { isWslMoveRepoBlocked } from '../../persistence/moving-wsl-projects/orchestration/wsl-move-background-backoff'
