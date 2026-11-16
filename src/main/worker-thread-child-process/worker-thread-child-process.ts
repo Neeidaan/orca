@@ -61,8 +61,6 @@ class WorkerThreadChildStdin extends EventEmitter {
   }
 }
 
-let abandonedTreeKills: Promise<void> = Promise.resolve()
-
 /** Main-thread stand-in for a piped ChildProcess whose real process lives on the worker. */
 export class WorkerThreadChildProcess extends EventEmitter {
   ownedGroupStopping = false
@@ -162,17 +160,15 @@ export class WorkerThreadChildProcess extends EventEmitter {
     if (!admitProcessTreeKill({ pid, site: 'worker-child-abandon', scope: 'win-taskkill-tree' })) {
       return
     }
-    // In-thread taskkill (the worker is gone), one at a time so a loss cannot stall main for every child at once.
-    abandonedTreeKills = abandonedTreeKills.then(() =>
-      startWindowsTreeKill(this as unknown as ChildProcess, pid, () => {}).settled.then(
-        (verdict) => {
-          if (verdict !== 'exited' || this.closed) {
-            return
-          }
-          this.receive({ type: 'exit', id: this.id, code: null, signal: null })
-          this.receive({ type: 'close', id: this.id, code: null, signal: null })
+    // In-thread taskkill, started now: the worker is gone and so is its handle, so a delayed kill could hit a reused pid.
+    void startWindowsTreeKill(this as unknown as ChildProcess, pid, () => {}).settled.then(
+      (verdict) => {
+        if (verdict !== 'exited' || this.closed) {
+          return
         }
-      )
+        this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+        this.receive({ type: 'close', id: this.id, code: null, signal: null })
+      }
     )
   }
 

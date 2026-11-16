@@ -28,12 +28,9 @@ export function killSpawnedCommandTree(
         detach()
         resolve()
       }
-      // A stalled worker: queue a root kill (delivered once it spawns) and let the caller settle.
-      const stalled = setTimeout(() => {
-        detach()
-        child.kill()
-        resolve()
-      }, WINDOWS_TREE_KILL_WAIT_MS)
+      // A stalled worker must not hold the caller; the tree kill still runs once the pid arrives.
+      const stalled = setTimeout(resolve, WINDOWS_TREE_KILL_WAIT_MS)
+      stalled.unref?.()
       child.once('spawn', onSpawn)
       child.once('close', onGone)
       child.once('error', onGone)
@@ -82,6 +79,7 @@ export function killSpawnedCommandTree(
     }
     let settled = false
     let timer: NodeJS.Timeout | null = null
+    let dispatch: NodeJS.Timeout | null = null
     let armed = false
     const finish = (fallbackToChildKill: boolean): void => {
       if (settled) {
@@ -90,6 +88,9 @@ export function killSpawnedCommandTree(
       settled = true
       if (timer) {
         clearTimeout(timer)
+      }
+      if (dispatch) {
+        clearTimeout(dispatch)
       }
       killer.removeAllListeners()
       if (fallbackToChildKill) {
@@ -112,9 +113,9 @@ export function killSpawnedCommandTree(
     // Give taskkill its full wait once it exists; a worker launch may first queue behind others.
     if ('id' in killer && killer.pid === undefined) {
       killer.once('spawn', arm)
-      // If the worker stalls, settle the caller with a root kill and let taskkill run when dispatched.
-      const dispatch = setTimeout(() => finish(true), WINDOWS_TREE_KILL_WAIT_MS)
-      killer.once('spawn', () => clearTimeout(dispatch))
+      // A stalled worker must not hold the caller; taskkill keeps its listeners and full wait once dispatched.
+      dispatch = setTimeout(resolve, WINDOWS_TREE_KILL_WAIT_MS)
+      dispatch.unref?.()
     } else {
       arm()
     }
