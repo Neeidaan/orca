@@ -327,11 +327,9 @@ export function HtmlDocPreview({
       handleHardReload()
       return 'issued'
     }
-    if (!reloadRef.current) {
-      return 'not-ready'
-    }
-    reloadRef.current()
-    return 'issued'
+    const reload = reloadRef.current
+    reload?.()
+    return reload ? 'issued' : 'not-ready'
   }, [failureReason, handleHardReload, state])
 
   useDocPreviewChangedFileRefresh({

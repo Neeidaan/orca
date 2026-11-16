@@ -1,4 +1,4 @@
-import type { BrowserPageDocLocation } from '../../../../../shared/browser-workspace-types'
+import type { BrowserPageDocLocation } from '../../../../../shared/browser/workspaces/browser-workspace-types'
 
 /** The file a reused page must show fresh: a local page's file URL, or a doc-preview's document. */
 export type ChangedFilePageRefreshResource =

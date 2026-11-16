@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
-import { browserPageDocLocationsEqual } from '../../../../../shared/browser-page-doc-location'
-import type { BrowserPageDocLocation } from '../../../../../shared/browser-workspace-types'
+import { browserPageDocLocationsEqual } from '../../../../../shared/browser/workspaces/browser-page-doc-location'
+import type { BrowserPageDocLocation } from '../../../../../shared/browser/workspaces/browser-workspace-types'
 import type { DocPreviewGrantHandle } from '@/lib/browser/documents/doc-preview-grants'
 import { useChangedFilePageRefresh } from '@/lib/browser/refresh/use-changed-file-page-refresh'
 import {

@@ -4,7 +4,7 @@ import {
   sourceControlRouting
 } from './source-control-file-open-actions'
 import type { SourceControlScopeRouting } from '../panel/worktree-scope'
-import type { ExecutionHostId } from '../../../../../../shared/execution-host'
+import type { ExecutionHostId } from '../../../../../../shared/execution-host/execution-host'
 
 const mocks = vi.hoisted(() => ({
   openFileInBrowserTab: vi.fn(),

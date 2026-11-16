@@ -3,7 +3,7 @@ import { useTranslate } from '@/i18n/use-translate'
 import { useWorkspaceFileBrowserActionPredicate } from '@/lib/browser/documents/file-preview'
 import { changedFileOpenLabel } from '@/lib/files/open/changed-file-view'
 import { isHtmlFilePath } from '@/components/terminal-pane/links/files/local-html-file-destinations'
-import { createNativeChatFileHref } from '../../../../../shared/native-chat/native-chat-href-routing'
+import { createNativeChatFileHref } from '../../../../../shared/native-chat/file-access/native-chat-href-routing'
 import { useNativeChatFileOpen } from '../links/actions/native-chat-link-click-context'
 import type { NativeChatFileCardAction } from './NativeChatFileCard'
 

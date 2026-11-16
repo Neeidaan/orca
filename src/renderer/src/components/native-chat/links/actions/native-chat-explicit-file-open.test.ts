@@ -6,7 +6,7 @@ import {
   installTerminalLinkTestEnvironment,
   setPlatform
 } from '@/components/terminal-pane/links/terminal-link-handlers-test-harness'
-import { createNativeChatFileHref } from '../../../../../../shared/native-chat/native-chat-href-routing'
+import { createNativeChatFileHref } from '../../../../../../shared/native-chat/file-access/native-chat-href-routing'
 import { createNativeChatExplicitFileOpener } from './use-native-chat-file-link-click'
 import type * as FilePreview from '@/lib/browser/documents/file-preview'
 

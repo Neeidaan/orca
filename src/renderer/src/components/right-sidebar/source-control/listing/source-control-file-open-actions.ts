@@ -2,7 +2,7 @@ import { toast } from 'sonner'
 import { openFileInBrowserTab } from '@/lib/browser/documents/file-preview'
 import { runtimeEnvironmentIdOrLocalUnlessTwin } from '@/lib/workspace/ownership/worktree-runtime-owner'
 import { useAppStore } from '@/store'
-import type { ExecutionHostId } from '../../../../../../shared/execution-host'
+import type { ExecutionHostId } from '../../../../../../shared/execution-host/execution-host'
 import {
   sourceControlScopeRuntimeEnvironmentId,
   type SourceControlScopeRouting
