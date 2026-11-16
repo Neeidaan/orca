@@ -170,6 +170,7 @@ export function AutoRenameFailedDialog({
       showFooterClose={false}
       reason={branchAutoRenameReasonText(retry.lastOutcome, t)}
       detailsFinishedAt={retry.lastFinishedAt}
+      announcementPaused={retry.running}
       action={
         <>
           <Button
@@ -230,6 +231,8 @@ type NameGenerationFailedDialogProps = {
   tone?: 'error' | 'neutral'
   /** When the latest retry finished; stamps the label so identical errors still read as new. */
   detailsFinishedAt?: number | null
+  /** Empties the live region while an attempt runs, so an identical result is announced again. */
+  announcementPaused?: boolean
 }
 
 /** Full output is memory-only; fall back to the published excerpt after restart and scroll long replies. */
@@ -244,7 +247,8 @@ export function NameGenerationFailedDialog({
   showFooterClose = true,
   reason = null,
   tone = 'error',
-  detailsFinishedAt = null
+  detailsFinishedAt = null,
+  announcementPaused = false
 }: NameGenerationFailedDialogProps): React.JSX.Element {
   const t = useTranslate()
   const intlLocale = useIntlLocale()
@@ -297,7 +301,9 @@ export function NameGenerationFailedDialog({
         )
   // Announce the reason, or the label and first error line; never the full output.
   const announcement =
-    detailsFinishedAt === null ? '' : (reason ?? `${detailsLabel}. ${error.split('\n')[0] ?? ''}`)
+    detailsFinishedAt === null || announcementPaused
+      ? ''
+      : (reason ?? `${detailsLabel}. ${error.split('\n')[0] ?? ''}`)
 
   const handleCopy = useCallback(async () => {
     try {

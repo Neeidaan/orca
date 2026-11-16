@@ -398,4 +398,24 @@ describe('AutoRenameFailedDialog sessions and focus', () => {
     await act(async () => frames.splice(0).forEach((frame) => frame(0)))
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
   })
+
+  it('re-announces an identical result by clearing the live region while naming runs', async () => {
+    await renderFailure()
+    const liveRegion = () => document.querySelector('[aria-live="polite"]')?.textContent ?? ''
+    retryBranchAutoRename.mockResolvedValueOnce({
+      attemptId: 1,
+      outcome: { kind: 'nothing-yet' },
+      finishedAt: 1
+    })
+    await act(async () => button('Try again')?.click())
+    expect(liveRegion()).toBe('No changes to name this branch from yet.')
+    const second = Promise.withResolvers<BranchAutoRenameRetryResult>()
+    retryBranchAutoRename.mockReturnValueOnce(second.promise)
+    await act(async () => button('Try again')?.click())
+    expect(liveRegion()).toBe('')
+    await act(async () =>
+      second.resolve({ attemptId: 2, outcome: { kind: 'nothing-yet' }, finishedAt: 1 })
+    )
+    expect(liveRegion()).toBe('No changes to name this branch from yet.')
+  })
 })
