@@ -21,14 +21,16 @@ export const FIRST_SUBMITTED_PROMPT_SQL = `WITH sent AS (
 )
 SELECT i.payload_json AS payload_json, sent.submitted_at AS submitted_at, i.sequence AS sequence,
   i.sequence_index AS sequence_index, i.ordinal AS ordinal
-FROM sent JOIN journal_items i ON i.session_id=? AND i.epoch=? AND i.item_id=sent.item_id
+FROM sent CROSS JOIN journal_items i ON i.session_id=? AND i.epoch=? AND i.item_id=sent.item_id
 WHERE ${USER_ITEM} AND NOT EXISTS (SELECT 1 FROM journal_item_aliases o
   WHERE o.session_id=? AND o.epoch=? AND o.provider_item_id=i.item_id)
 UNION ALL
 SELECT i.payload_json, sent.submitted_at, i.sequence, i.sequence_index, i.ordinal
 FROM sent
-JOIN journal_item_aliases a ON a.session_id=? AND a.epoch=? AND a.item_id=sent.item_id
-JOIN journal_items i ON i.session_id=? AND i.epoch=? AND i.item_id=a.provider_item_id
+-- CROSS JOIN pins the order: walk this session's submissions, then keyed alias and item lookups.
+CROSS JOIN journal_item_aliases a INDEXED BY journal_item_aliases_target
+  ON a.session_id=? AND a.epoch=? AND a.item_id=sent.item_id
+CROSS JOIN journal_items i ON i.session_id=? AND i.epoch=? AND i.item_id=a.provider_item_id
 WHERE ${USER_ITEM}
 ORDER BY submitted_at, sequence, sequence_index, ordinal LIMIT ?`
 

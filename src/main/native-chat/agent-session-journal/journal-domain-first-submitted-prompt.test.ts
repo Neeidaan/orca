@@ -101,9 +101,19 @@ it('matches items and aliases by keyed lookup, never by rescanning item history'
     .prepare(`EXPLAIN QUERY PLAN ${FIRST_SUBMITTED_PROMPT_SQL}`)
     .all('chat', 'e', 0, 'chat', 'e', 'chat', 'e', 'chat', 'e', 'chat', 'e', 1)
     .map((row) => String(row.detail))
-  expect(plan.length).toBeGreaterThan(0)
-  // Only the session's submissions may be walked; items and aliases must be point lookups.
-  expect(plan.filter((detail) => /^SCAN (i|a|o)\b/.test(detail))).toEqual([])
+  // Production planner, no ANALYZE stats: both arms walk only this session's submissions since
+  // creation; items and aliases are keyed point lookups, never a walk of message history.
+  expect(plan.filter((detail) => detail.startsWith('SCAN '))).toEqual([])
+  const itemReads = plan.filter((detail) => /^(SCAN|SEARCH) i\b/.test(detail))
+  expect(itemReads).toHaveLength(2)
+  for (const detail of itemReads) {
+    expect(detail).toMatch(/\(session_id=\? AND epoch=\? AND item_id=\?\)$/)
+  }
+  const submissionReads = plan.filter((detail) => detail.includes('journal_submission_attempts'))
+  expect(submissionReads).toHaveLength(2)
+  for (const detail of submissionReads) {
+    expect(detail).toContain('submitted_at>?')
+  }
 })
 
 it('never treats a message without a submission row as a candidate', async () => {
