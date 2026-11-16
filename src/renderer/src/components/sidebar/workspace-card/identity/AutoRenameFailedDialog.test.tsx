@@ -428,6 +428,24 @@ describe('AutoRenameFailedDialog sessions and focus', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
   })
 
+  it('moves focus to Dismiss when a kept name removes the focused Try again', async () => {
+    const frames = queueFrames()
+    await renderFailure()
+    retryBranchAutoRename.mockResolvedValue({
+      attemptId: 1,
+      outcome: { kind: 'ineligible', reason: 'branch-renamed' },
+      finishedAt: 1
+    })
+    button('Try again')?.focus()
+    await act(async () => button('Try again')?.click())
+    // Radix's focus scope moves focus to the dialog container when the focused button unmounts.
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
+    dialog?.setAttribute('tabindex', '-1')
+    dialog?.focus()
+    await act(async () => frames.splice(0).forEach((frame) => frame(0)))
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
+  })
+
   it('does not focus a dialog that started closing before the queued focus runs', async () => {
     const frames = queueFrames()
     await renderFailure()

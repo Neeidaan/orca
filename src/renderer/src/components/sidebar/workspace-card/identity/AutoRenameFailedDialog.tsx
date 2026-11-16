@@ -110,8 +110,9 @@ export function AutoRenameFailedDialog({
           // A closing dialog stays connected through its exit animation.
           dialog.getAttribute('data-state') === 'open' &&
           button.closest('[role="dialog"]') === dialog &&
-          // Unchanged, or dropped to <body> because the focused Try again just unmounted.
-          (active === focusedAtFinish || active === document.body)
+          // Unchanged, or dropped because the focused Try again just unmounted: Radix moves focus to
+          // the dialog container (body elsewhere).
+          (active === focusedAtFinish || active === document.body || active === dialog)
         ) {
           button.focus()
         }
