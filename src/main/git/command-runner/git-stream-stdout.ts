@@ -183,7 +183,8 @@ function streamInSpan(
             child.once('close', reportTermination)
           }
           child.once('error', () => {
-            if (!child.pid) {
+            // A worker-launched child always closes, even when it never started; an error before its pid proves nothing.
+            if (!child.pid && !('id' in child)) {
               reportTermination()
             }
           })

@@ -42,8 +42,12 @@ export function runProcess(
   return new Promise<ProcessResult>((resolve, reject) => {
     const terminationReporter = createChildTerminationReporter(spec.onChildTerminated)
     let child: ChildProcess
+    // A launcher's child reports its own close even when it never started; only close proves termination.
+    let launched = false
     try {
-      child = spec.launch?.(spec) ?? spawnProcess(spec)
+      const launchedChild = spec.launch?.(spec)
+      launched = Boolean(launchedChild)
+      child = launchedChild ?? spawnProcess(spec)
     } catch (error) {
       terminationReporter.report()
       reject(error)
@@ -284,7 +288,7 @@ export function runProcess(
 
     child.once('error', (error) => {
       spawnSettled = true
-      terminationReporter.reportIf(!child.pid)
+      terminationReporter.reportIf(!child.pid && !launched)
       if (barrierStopping) {
         deferredError = error
         resolveBarrierIfSafe()

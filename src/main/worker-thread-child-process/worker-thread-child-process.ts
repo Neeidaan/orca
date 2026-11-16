@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs'
 import type { ChildProcess } from 'node:child_process'
 import type { Worker } from 'node:worker_threads'
 import type { ProcessSpec } from '@orca/process-host/process-spec'
-import { forceTerminateProcessTree } from '@orca/process-host/process-tree-termination'
+import { admitProcessTreeKill } from '@orca/process-host/process-tree-kill-gate'
+import { startWindowsTreeKill } from '@orca/process-host/windows-tree-kill'
 import { spawnWorkerThread } from '../worker-threads/worker-thread-spawn'
 import { LazyWorkerThreadHost } from '../worker-threads/lazy-worker-thread-host'
 import type {
@@ -142,27 +143,29 @@ export class WorkerThreadChildProcess extends EventEmitter {
     }
   }
 
-  /** The worker is gone: native-like children are killed by pid and then close, so callers release what they hold; others keep the error-only contract. */
+  /** The worker is gone: a native-like child closes only once a tree kill proves it ended, so callers keep their locks while it may still run; others keep the error-only contract. */
   abandon(message: string): void {
     this.emitErrorIfObserved({ message })
-    if (!this.nativeLike || this.closed) {
+    const pid = this.pid
+    // No pid proves nothing: the worker may have created the process before it could report it.
+    if (!this.nativeLike || this.closed || pid === undefined) {
       return
     }
-    const close = (): void => {
-      if (this.exitCode === null && this.signalCode === null) {
-        this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+    if (!admitProcessTreeKill({ pid, site: 'worker-child-abandon', scope: 'win-taskkill-tree' })) {
+      return
+    }
+    // In-thread taskkill: the worker is gone, and this runs only when it dies.
+    void startWindowsTreeKill(this as unknown as ChildProcess, pid, () => {}).settled.then(
+      (verdict) => {
+        if (verdict !== 'exited' || this.closed) {
+          return
+        }
+        if (this.exitCode === null && this.signalCode === null) {
+          this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+        }
+        this.receive({ type: 'close', id: this.id, code: null, signal: null })
       }
-      this.receive({ type: 'close', id: this.id, code: null, signal: null })
-    }
-    // No pid means the worker never confirmed a process; there is nothing left to stop.
-    if (this.pid === undefined || this.exitCode !== null || this.signalCode !== null) {
-      close()
-      return
-    }
-    // Runs taskkill in-thread: the worker is gone, and this happens only when it dies.
-    void forceTerminateProcessTree(this as unknown as ChildProcess)
-      .catch(() => false)
-      .then(close)
+    )
   }
 
   // Ignore unobserved late errors after caller detach or EventEmitter would throw fatally into main.

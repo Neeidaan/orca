@@ -14,15 +14,20 @@ export function killSpawnedCommandTree(
     // A worker-launched child reports its pid asynchronously; a root-only kill now would orphan its tree.
     return new Promise((resolve) => {
       const onSpawn = (): void => {
-        child.off('close', onClose)
+        child.off('close', onGone)
+        child.off('error', onGone)
         void killSpawnedCommandTree(child).then(resolve)
       }
-      const onClose = (): void => {
+      // A lost worker reports an error and may never confirm a pid; the caller must still settle.
+      const onGone = (): void => {
         child.off('spawn', onSpawn)
+        child.off('close', onGone)
+        child.off('error', onGone)
         resolve()
       }
       child.once('spawn', onSpawn)
-      child.once('close', onClose)
+      child.once('close', onGone)
+      child.once('error', onGone)
     })
   }
   const pid = child.pid
