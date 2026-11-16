@@ -2,8 +2,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { domainLifecycleFixture } from './journal-domain-lifecycle.test-fixture'
 import { readJournalSqlPoint } from './journal-sql-point-read'
 import {
+  FIRST_SUBMITTED_PROMPT_ITEM_SQL,
   FIRST_SUBMITTED_PROMPT_SCAN_LIMIT,
-  FIRST_SUBMITTED_PROMPT_SQL
+  FIRST_SUBMITTED_PROMPT_SUBMISSIONS_SQL
 } from './journal-domain-first-submitted-prompt'
 import type { AgentJournalMessageItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 
@@ -73,18 +74,35 @@ it('pages past text-less candidates to the first message with text', async () =>
   expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
 })
 
-it('reads past many text-less candidates in one query, not one per page', async () => {
-  const f = domainLifecycleFixture(cleanup)
-  for (let index = 0; index < 100; index++) {
-    await send(f, `blank-${index}`, '', 200 + index)
+it('stops at the earliest valid message, whatever later history follows', async () => {
+  async function submissionsVisited(laterSends: number): Promise<number> {
+    const f = domainLifecycleFixture(cleanup)
+    await send(f, 'first', 'Add password reset', 150)
+    for (let index = 0; index < laterSends; index++) {
+      await send(f, `later-${index}`, `Later request ${index}`, 300 + index)
+    }
+    let visited = 0
+    const prepare = f.db.prepare.bind(f.db)
+    vi.spyOn(f.db, 'prepare').mockImplementation((sql: string) => {
+      const statement = prepare(sql)
+      if (sql !== FIRST_SUBMITTED_PROMPT_SUBMISSIONS_SQL) {
+        return statement
+      }
+      const all = statement.all.bind(statement)
+      return Object.assign(statement, {
+        all: (...params: Parameters<typeof all>) => {
+          const rows = all(...params)
+          visited += rows.length
+          return rows
+        }
+      })
+    })
+    expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
+    return visited
   }
-  await send(f, 'named', 'Add password reset', 400)
-  const prepare = vi.spyOn(f.db, 'prepare')
-  expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
-  const candidateQueries = prepare.mock.calls.filter(
-    ([sql]) => String(sql).includes('journal_item_aliases') && String(sql).includes('submitted_at')
-  )
-  expect(candidateQueries).toHaveLength(1)
+  const small = await submissionsVisited(8)
+  expect(small).toBeGreaterThan(0)
+  expect(await submissionsVisited(80)).toBe(small)
 })
 
 it('reports an incomplete scan instead of a miss once the bound is reached', async () => {
@@ -97,23 +115,38 @@ it('reports an incomplete scan instead of a miss once the bound is reached', asy
 
 it('matches items and aliases by keyed lookup, never by rescanning item history', () => {
   const f = domainLifecycleFixture(cleanup)
-  const plan = f.db
-    .prepare(`EXPLAIN QUERY PLAN ${FIRST_SUBMITTED_PROMPT_SQL}`)
-    .all('chat', 'e', 0, 'chat', 'e', 'chat', 'e', 'chat', 'e', 'chat', 'e', 1)
-    .map((row) => String(row.detail))
-  // Production planner, no ANALYZE stats: both arms walk only this session's submissions since
-  // creation; items and aliases are keyed point lookups, never a walk of message history.
-  expect(plan.filter((detail) => detail.startsWith('SCAN '))).toEqual([])
-  const itemReads = plan.filter((detail) => /^(SCAN|SEARCH) i\b/.test(detail))
-  expect(itemReads).toHaveLength(2)
-  for (const detail of itemReads) {
+  const planOf = (sql: string, params: (string | number)[]) =>
+    f.db
+      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      .all(...params)
+      .map((row) => String(row.detail))
+  // Production planner, no ANALYZE stats.
+  const submissions = planOf(FIRST_SUBMITTED_PROMPT_SUBMISSIONS_SQL, ['chat', 'e', 0, 0, '', 4])
+  expect(submissions).toHaveLength(1)
+  expect(submissions[0]).toMatch(
+    /^SEARCH journal_submission_attempts USING INDEX journal_submission_order \(session_id=\? AND epoch=\? AND \(submitted_at,ordinal,message_id\)>\(\?,\?,\?\)\)$/
+  )
+  const item = planOf(FIRST_SUBMITTED_PROMPT_ITEM_SQL, [
+    'chat',
+    'e',
+    'id',
+    'chat',
+    'e',
+    'chat',
+    'e',
+    'chat',
+    'e',
+    'id'
+  ])
+  expect(item.filter((detail) => detail.startsWith('SCAN '))).toEqual([])
+  for (const detail of item.filter((line) => /^SEARCH i\b/.test(line))) {
     expect(detail).toMatch(/\(session_id=\? AND epoch=\? AND item_id=\?\)$/)
   }
-  const submissionReads = plan.filter((detail) => detail.includes('journal_submission_attempts'))
-  expect(submissionReads).toHaveLength(2)
-  for (const detail of submissionReads) {
-    expect(detail).toContain('submitted_at>?')
-  }
+  expect(item).toContainEqual(
+    expect.stringMatching(
+      /^SEARCH a USING (COVERING )?INDEX journal_item_aliases_target \(session_id=\? AND epoch=\? AND item_id=\?\)$/
+    )
+  )
 })
 
 it('never treats a message without a submission row as a candidate', async () => {
