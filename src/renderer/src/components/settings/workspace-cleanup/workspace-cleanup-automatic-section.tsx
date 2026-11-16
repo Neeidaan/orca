@@ -181,7 +181,7 @@ export function WorkspaceCleanupAutomaticSection({
           {t('components.settings.workspaceCleanup.automatic.runningButton', 'Running…')}
         </>
       ) : (
-        search.status.title
+        t('components.settings.workspaceCleanup.automatic.runNow', 'Run rules now')
       )}
     </Button>
   ) : null
@@ -191,12 +191,14 @@ export function WorkspaceCleanupAutomaticSection({
       {announcement.text}
     </span>
   )
-  if (!showRules) {
-    return (
-      <>
-        {announcer}
-        {matchesSettingsSearch(query, [search.status]) ? (
-          <SearchableSetting {...search.status}>
+  const showHeading = showRules || matchesSettingsSearch(query, [search.status])
+  return (
+    <>
+      {announcer}
+      {showHeading ? (
+        <div className="space-y-3">
+          {/* Search lands on the heading, which is shown whether rules are off, on or running. */}
+          <SearchableSetting {...search.status} forceVisible>
             <SettingsGroupHeader
               title={title}
               description={description}
@@ -204,24 +206,21 @@ export function WorkspaceCleanupAutomaticSection({
               wrapAction
             />
           </SearchableSetting>
-        ) : null}
-      </>
-    )
-  }
-  return (
-    <>
-      {announcer}
-      <SettingsGroup title={title} description={description} action={action} wrapAction>
-        {children}
-        {query.trim() === '' ? (
-          <p data-settings-row="" className="py-3 text-xs text-muted-foreground">
-            {t(
-              'components.settings.workspaceCleanup.rules.branchNote',
-              'Merged branches are deleted with their workspace. Unmerged branches are kept.'
-            )}
-          </p>
-        ) : null}
-      </SettingsGroup>
+          {showRules ? (
+            <SettingsGroup>
+              {children}
+              {query.trim() === '' ? (
+                <p data-settings-row="" className="py-3 text-xs text-muted-foreground">
+                  {t(
+                    'components.settings.workspaceCleanup.rules.branchNote',
+                    'Merged branches are deleted with their workspace. Unmerged branches are kept.'
+                  )}
+                </p>
+              ) : null}
+            </SettingsGroup>
+          ) : null}
+        </div>
+      ) : null}
     </>
   )
 }
