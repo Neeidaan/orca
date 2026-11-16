@@ -1,9 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { admitSelfInitiatedTreeKill } from '../../../pty/process-retirement/own-chromium-tree-kill-guard'
-import {
-  spawnOffMainThreadOnWindows,
-  type WorkerThreadChildProcess
-} from '../../../worker-thread-child-process/worker-thread-child-process'
+import type { WorkerThreadChildProcess } from '../../../worker-thread-child-process/worker-thread-child-process'
 
 const WINDOWS_TREE_KILL_WAIT_MS = 2_000
 
@@ -54,23 +51,17 @@ export function killSpawnedCommandTree(
     return Promise.resolve()
   }
   return new Promise((resolve) => {
-    let killer: ChildProcess | WorkerThreadChildProcess
+    let killer: ChildProcess
     try {
-      const args = ['/pid', String(pid), '/t', '/f']
       // Await Windows tree cleanup so shim/WSL descendants cannot outlive their probe.
-      const offMain = spawnOffMainThreadOnWindows({ program: 'taskkill', args })
-      if (offMain) {
-        offMain.stdin.end()
-        killer = offMain
-      } else {
-        const native = spawn('taskkill', args, { stdio: 'ignore', windowsHide: true })
-        if (!native || typeof native.unref !== 'function') {
-          child.kill()
-          resolve()
-          return
-        }
-        native.unref()
-        killer = native
+      killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      if (!killer || typeof killer.unref !== 'function') {
+        child.kill()
+        resolve()
+        return
       }
     } catch {
       child.kill()
@@ -79,8 +70,6 @@ export function killSpawnedCommandTree(
     }
     let settled = false
     let timer: NodeJS.Timeout | null = null
-    let dispatch: NodeJS.Timeout | null = null
-    let armed = false
     const finish = (fallbackToChildKill: boolean): void => {
       if (settled) {
         return
@@ -88,9 +77,6 @@ export function killSpawnedCommandTree(
       settled = true
       if (timer) {
         clearTimeout(timer)
-      }
-      if (dispatch) {
-        clearTimeout(dispatch)
       }
       killer.removeAllListeners()
       if (fallbackToChildKill) {
@@ -100,24 +86,10 @@ export function killSpawnedCommandTree(
     }
     killer.once('error', () => finish(true))
     killer.once('close', (code) => finish(code !== 0))
-    const arm = (): void => {
-      if (armed || settled) {
-        return
-      }
-      armed = true
-      timer = setTimeout(() => {
-        killer.kill()
-        finish(true)
-      }, WINDOWS_TREE_KILL_WAIT_MS)
-    }
-    // Give taskkill its full wait once it exists; a worker launch may first queue behind others.
-    if ('id' in killer && killer.pid === undefined) {
-      killer.once('spawn', arm)
-      // A stalled worker must not hold the caller; taskkill keeps its listeners and full wait once dispatched.
-      dispatch = setTimeout(resolve, WINDOWS_TREE_KILL_WAIT_MS)
-      dispatch.unref?.()
-    } else {
-      arm()
-    }
+    timer = setTimeout(() => {
+      killer.kill()
+      finish(true)
+    }, WINDOWS_TREE_KILL_WAIT_MS)
+    killer.unref()
   })
 }
