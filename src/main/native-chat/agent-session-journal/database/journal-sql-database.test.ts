@@ -141,7 +141,9 @@ it('keeps saved history readable after startup rollback and retries before the n
     )
   )
   await withTestAgentSessionDatabase(root, (db) => {
-    const insert = db.prepare('INSERT INTO agent_session_records(session_id,record_json) VALUES(?,?)')
+    const insert = db.prepare(
+      'INSERT INTO agent_session_records(session_id,record_json) VALUES(?,?)'
+    )
     insert.run(sessionId, JSON.stringify(record))
     // The retried installation leaves this lease unmarked, so the fallback view must too.
     insert.run('released', JSON.stringify(released))

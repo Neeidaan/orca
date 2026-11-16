@@ -88,7 +88,8 @@ export function loadAgentSessionStoreRecordRow(
     // The same leases installation marks, so a retried installation agrees with this view.
     state.records.set(sessionId, {
       ...record,
-      lease: unreconciled && agentSessionLeaseMayBeHeld(lease) ? { ...lease, unreconciled: true } : lease
+      lease:
+        unreconciled && agentSessionLeaseMayBeHeld(lease) ? { ...lease, unreconciled: true } : lease
     })
     return
   }
