@@ -28,6 +28,8 @@ import type {
 export const IDLE_TEARDOWN_MS = 2 * 60_000
 
 const WORKER_ENTRY_FILENAME = 'worker-thread-child-process-entry.js'
+// A stalled worker must not collect launches without bound; past this, optional launches spawn in-thread.
+export const MAX_PENDING_OPTIONAL_LAUNCHES = 16
 // Node reports a negative errno as the exit code of a child that never started.
 const SPAWN_FAILED_EXIT_CODE = -1
 
@@ -227,7 +229,20 @@ export class WorkerThreadChildProcessHost {
 
   /** A native-like child, or null when the worker cannot start or proved broken, so the caller spawns in-thread instead. */
   trySpawn(spec: WorkerThreadChildSpec): WorkerThreadChildProcess | null {
-    return !this.brokenBeforeServing && this.host.ensure() ? this.spawn(spec, true) : null
+    if (this.brokenBeforeServing || this.pendingLaunches() >= MAX_PENDING_OPTIONAL_LAUNCHES) {
+      return null
+    }
+    return this.host.ensure() ? this.spawn(spec, true) : null
+  }
+
+  private pendingLaunches(): number {
+    let pending = 0
+    for (const child of this.children.values()) {
+      if (child.pid === undefined && !child.closed) {
+        pending++
+      }
+    }
+    return pending
   }
 
   private post(request: WorkerThreadChildRequest): boolean {
