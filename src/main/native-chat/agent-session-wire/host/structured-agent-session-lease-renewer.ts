@@ -80,8 +80,8 @@ export class StructuredAgentSessionLeaseRenewer {
     // Held children prove ownership even when PID probes lack start-time/token evidence.
     const holds = (record: AgentSessionRecord): boolean =>
       this.input.holdsLiveChild(record.sessionId, record.lease.runtimeFence)
-    const held = records.filter(holds)
-    const unheld = records.filter((record) => !held.includes(record))
+    const held = new Set(records.filter(holds))
+    const unheld = records.filter((record) => !held.has(record))
     const probes =
       unheld.length > 0 ? await this.probe(unheld) : new Map<string, AgentSessionOwnerProbe>()
     for (const record of held) {
