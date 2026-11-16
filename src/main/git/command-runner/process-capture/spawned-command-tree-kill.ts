@@ -8,8 +8,23 @@ import {
 const WINDOWS_TREE_KILL_WAIT_MS = 2_000
 
 export function killSpawnedCommandTree(
-  child: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode' | 'kill'>
+  child: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode' | 'kill'> | WorkerThreadChildProcess
 ): Promise<void> {
+  if ('id' in child && child.pid === undefined && !child.closed) {
+    // A worker-launched child reports its pid asynchronously; a root-only kill now would orphan its tree.
+    return new Promise((resolve) => {
+      const onSpawn = (): void => {
+        child.off('close', onClose)
+        void killSpawnedCommandTree(child).then(resolve)
+      }
+      const onClose = (): void => {
+        child.off('spawn', onSpawn)
+        resolve()
+      }
+      child.once('spawn', onSpawn)
+      child.once('close', onClose)
+    })
+  }
   const pid = child.pid
   if (!pid || process.platform !== 'win32') {
     child.kill()
@@ -53,6 +68,7 @@ export function killSpawnedCommandTree(
     }
     let settled = false
     let timer: NodeJS.Timeout | null = null
+    let armed = false
     const finish = (fallbackToChildKill: boolean): void => {
       if (settled) {
         return
@@ -69,9 +85,21 @@ export function killSpawnedCommandTree(
     }
     killer.once('error', () => finish(true))
     killer.once('close', (code) => finish(code !== 0))
-    timer = setTimeout(() => {
-      killer.kill()
-      finish(true)
-    }, WINDOWS_TREE_KILL_WAIT_MS)
+    const arm = (): void => {
+      if (armed || settled) {
+        return
+      }
+      armed = true
+      timer = setTimeout(() => {
+        killer.kill()
+        finish(true)
+      }, WINDOWS_TREE_KILL_WAIT_MS)
+    }
+    // Give taskkill its full wait once it exists; a worker launch may first queue behind others.
+    if ('id' in killer && killer.pid === undefined) {
+      killer.once('spawn', arm)
+    } else {
+      arm()
+    }
   })
 }

@@ -3,9 +3,13 @@ import { existsSync } from 'node:fs'
 import type { ChildProcess } from 'node:child_process'
 import type { Worker } from 'node:worker_threads'
 import type { ProcessSpec } from '@orca/process-host/process-spec'
+import { forceTerminateProcessTree } from '@orca/process-host/process-tree-termination'
 import { spawnWorkerThread } from '../worker-threads/worker-thread-spawn'
 import { LazyWorkerThreadHost } from '../worker-threads/lazy-worker-thread-host'
-import type { WorkerThreadFactory } from '../worker-threads/worker-thread-transport'
+import type {
+  WorkerRequestTransport,
+  WorkerThreadFactory
+} from '../worker-threads/worker-thread-transport'
 import {
   currentWorkerEntryLayout,
   resolveWorkerThreadEntryPath
@@ -138,17 +142,27 @@ export class WorkerThreadChildProcess extends EventEmitter {
     }
   }
 
-  /** The worker is gone: native-like children close now; others keep the error-only contract. */
+  /** The worker is gone: native-like children are killed by pid and then close, so callers release what they hold; others keep the error-only contract. */
   abandon(message: string): void {
     this.emitErrorIfObserved({ message })
     if (!this.nativeLike || this.closed) {
       return
     }
-    // The orphan's pipes are broken, so it ends at its next write; waiting for proof would hold Git admission forever.
-    if (this.exitCode === null && this.signalCode === null) {
-      this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+    const close = (): void => {
+      if (this.exitCode === null && this.signalCode === null) {
+        this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+      }
+      this.receive({ type: 'close', id: this.id, code: null, signal: null })
     }
-    this.receive({ type: 'close', id: this.id, code: null, signal: null })
+    // No pid means the worker never confirmed a process; there is nothing left to stop.
+    if (this.pid === undefined || this.exitCode !== null || this.signalCode !== null) {
+      close()
+      return
+    }
+    // Runs taskkill in-thread: the worker is gone, and this happens only when it dies.
+    void forceTerminateProcessTree(this as unknown as ChildProcess)
+      .catch(() => false)
+      .then(close)
   }
 
   // Ignore unobserved late errors after caller detach or EventEmitter would throw fatally into main.
@@ -164,7 +178,7 @@ export class WorkerThreadChildProcessHost {
   private readonly children = new Map<number, WorkerThreadChildProcess>()
   private nextId = 1
   // A worker that dies before answering any launch is broken (e.g. a bad entry); stop routing optional launches to it.
-  private served = false
+  private servedBy: WorkerRequestTransport | null = null
   private brokenBeforeServing = false
 
   constructor(factory: WorkerThreadFactory) {
@@ -223,7 +237,7 @@ export class WorkerThreadChildProcessHost {
   }
 
   private route(event: WorkerThreadChildEvent): void {
-    this.served = true
+    this.servedBy = this.host.current
     const child = this.children.get(event.id)
     if (!child) {
       return
@@ -251,7 +265,7 @@ export class WorkerThreadChildProcessHost {
   private abandonAll(message: string): void {
     const abandoned = [...this.children.values()]
     this.children.clear()
-    this.brokenBeforeServing ||= !this.served
+    this.brokenBeforeServing ||= this.servedBy !== this.host.current
     this.host.destroy()
     for (const child of abandoned) {
       child.abandon(message)
