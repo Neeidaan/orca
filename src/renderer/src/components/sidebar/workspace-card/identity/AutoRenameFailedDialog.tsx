@@ -75,11 +75,10 @@ export function AutoRenameFailedDialog({
   const [dismissing, setDismissing] = useState(false)
   const tryAgainRef = useRef<HTMLButtonElement>(null)
   // Each open starts a session; queued focus from an earlier session or a closed dialog is void.
-  const [openSession] = useState(() => ({ current: 0, open }))
+  const openSession = useRef({ count: 0, open })
   useLayoutEffect(() => {
-    openSession.current++
-    openSession.open = open
-  }, [open, openSession])
+    openSession.current = { count: openSession.current.count + 1, open }
+  }, [open])
   const dismissRef = useRef<HTMLButtonElement>(null)
   // A final retry result can clear the persisted error while the dialog stays open on its reason.
   const [shownError, setShownError] = useState(error)
@@ -98,15 +97,15 @@ export function AutoRenameFailedDialog({
       }
       const target = outcome.kind === 'ineligible' ? dismissRef : tryAgainRef
       const focusedAtFinish = document.activeElement
-      const sessionAtFinish = openSession.current
+      const sessionAtFinish = openSession.current.count
       requestAnimationFrame(() => {
         // Re-validate at run time: the dialog may have closed or reopened, or the user moved focus.
         const button = target.current
         const active = document.activeElement
         if (
           button &&
-          openSession.current === sessionAtFinish &&
-          openSession.open &&
+          openSession.current.count === sessionAtFinish &&
+          openSession.current.open &&
           dialog.isConnected &&
           // A closing dialog stays connected through its exit animation.
           dialog.getAttribute('data-state') === 'open' &&
