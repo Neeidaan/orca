@@ -24,9 +24,18 @@ export type BranchAutoRenameOutcome =
   | { kind: 'deferred'; reason: BranchAutoRenameDeferredReason }
   | { kind: 'ineligible'; reason: BranchAutoRenameIneligibleReason }
 
+/** Attempts run on the desktop's own host; a same-id workspace on another host is a different one. */
+export type BranchAutoRenameAttemptHost = 'local'
+
 export type BranchAutoRenameAttemptEvent =
-  | { worktreeId: string; attemptId: number; phase: 'started' }
   | {
+      executionHostId: BranchAutoRenameAttemptHost
+      worktreeId: string
+      attemptId: number
+      phase: 'started'
+    }
+  | {
+      executionHostId: BranchAutoRenameAttemptHost
       worktreeId: string
       attemptId: number
       phase: 'finished'

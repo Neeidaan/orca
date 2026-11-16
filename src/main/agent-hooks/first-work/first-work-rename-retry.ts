@@ -104,7 +104,7 @@ function lookupSource(
     })
     try {
       return await Promise.race([
-        lookupContext(worktreeId, incarnation, controller.signal, deadlineAt, deps),
+        lookupContext(worktreeId, incarnation, attempt, controller.signal, deadlineAt, deps),
         expired
       ])
     } finally {
@@ -116,14 +116,17 @@ function lookupSource(
 async function lookupContext(
   worktreeId: string,
   incarnation: string,
+  attempt: FirstWorkAttempt,
   signal: AbortSignal,
   deadlineAt: number,
   deps: FirstWorkRetryDeps
 ): Promise<FirstWorkContextResolution> {
   const createdAt = deps.getWorkspaceCreatedAt(worktreeId)
   if (createdAt !== undefined) {
-    const native = await leaseNativeFirstMessageRead(incarnation, () =>
-      readNativeFirstMessage(deps.nativeReads(worktreeId), createdAt)
+    const native = await leaseNativeFirstMessageRead(
+      incarnation,
+      () => attempt.isCurrent(),
+      (stillWanted) => readNativeFirstMessage(deps.nativeReads(worktreeId), createdAt, stillWanted)
     )
     if (native.kind === 'unreadable') {
       return unreadable

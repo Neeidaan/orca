@@ -29,6 +29,7 @@ export type FirstWorkAttempt = {
   expireLookup: () => void
   /** Throws when the workspace was deleted and recreated since admission. */
   assertIncarnation: () => void
+  isIncarnationCurrent: () => boolean
 }
 
 export type FirstWorkAttemptDeps = {
@@ -123,6 +124,7 @@ export function startFirstWorkAttempt(
     expireLookup: () => {
       entry.lookupExpired = true
     },
+    isIncarnationCurrent: incarnationCurrent,
     assertIncarnation: () => {
       if (!incarnationCurrent()) {
         throw new FirstWorkWorkspaceReplacedError()
@@ -130,7 +132,7 @@ export function startFirstWorkAttempt(
     }
   }
   inFlight.set(worktreeId, entry)
-  notifyAttempt({ worktreeId, attemptId, phase: 'started' })
+  notifyAttempt({ executionHostId: 'local', worktreeId, attemptId, phase: 'started' })
   entry.promise = settleAttempt(worktreeId, entry, () => run(attempt), incarnationCurrent)
   return entry
 }
@@ -169,6 +171,6 @@ async function settleAttempt(
     inFlight.delete(worktreeId)
   }
   const result = { attemptId: entry.attemptId, outcome: verdict.outcome, finishedAt: Date.now() }
-  notifyAttempt({ worktreeId, phase: 'finished', ...result })
+  notifyAttempt({ executionHostId: 'local', worktreeId, phase: 'finished', ...result })
   return result
 }

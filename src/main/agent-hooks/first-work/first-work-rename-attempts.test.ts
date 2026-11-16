@@ -87,7 +87,12 @@ describe('native first-message read lease', () => {
       reads.set(key, read)
       return read.promise
     })
-    const lease = (key: string) => leaseNativeFirstMessageRead(key, () => physical(key))
+    const lease = (key: string) =>
+      leaseNativeFirstMessageRead(
+        key,
+        () => true,
+        () => physical(key)
+      )
 
     const a1 = lease('a')
     const a2 = lease('a')

@@ -7,6 +7,7 @@ import { AutoRenameFailedDialog } from './AutoRenameFailedDialog'
 import { useAppStore } from '@/store'
 import type { AppState } from '@/store/types'
 import { makeWorktree } from '@/store/slices/worktrees/worktree.test-fixture'
+import type { ExecutionHostId } from '../../../../../../shared/execution-host'
 import type {
   BranchAutoRenameAttemptEvent,
   BranchAutoRenameRetryResult
@@ -122,6 +123,8 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+const ignoreOpenChange = (_open: boolean): void => {}
+
 const EXCERPT_ERROR = 'Pi CLI command failed with code 1: No API key found for github-copilot.'
 
 describe('AutoRenameFailedDialog retry', () => {
@@ -204,10 +207,15 @@ describe('AutoRenameFailedDialog retry', () => {
   it('follows a newer attempt that starts while an older one is tracked', async () => {
     await renderFailure()
     const id = 'repo1::/path/wt1'
-    await act(async () => emitAttempt({ worktreeId: id, attemptId: 1, phase: 'started' }))
-    await act(async () => emitAttempt({ worktreeId: id, attemptId: 2, phase: 'started' }))
+    await act(async () =>
+      emitAttempt({ executionHostId: 'local', worktreeId: id, attemptId: 1, phase: 'started' })
+    )
+    await act(async () =>
+      emitAttempt({ executionHostId: 'local', worktreeId: id, attemptId: 2, phase: 'started' })
+    )
     await act(async () =>
       emitAttempt({
+        executionHostId: 'local',
         worktreeId: id,
         attemptId: 1,
         phase: 'finished',
@@ -219,6 +227,7 @@ describe('AutoRenameFailedDialog retry', () => {
     setStoredError(null)
     await act(async () =>
       emitAttempt({
+        executionHostId: 'local',
         worktreeId: id,
         attemptId: 2,
         phase: 'finished',
@@ -235,9 +244,12 @@ describe('AutoRenameFailedDialog retry', () => {
     retryBranchAutoRename.mockReturnValueOnce(first.promise)
     await act(async () => button('Try again')?.click())
     const id = 'repo1::/path/wt1'
-    await act(async () => emitAttempt({ worktreeId: id, attemptId: 1, phase: 'started' }))
+    await act(async () =>
+      emitAttempt({ executionHostId: 'local', worktreeId: id, attemptId: 1, phase: 'started' })
+    )
     await act(async () =>
       emitAttempt({
+        executionHostId: 'local',
         worktreeId: id,
         attemptId: 1,
         phase: 'finished',
@@ -280,9 +292,12 @@ describe('AutoRenameFailedDialog retry', () => {
     })
     await act(async () => root.render(<WorkspaceFailure />))
     const id = 'repo1::/path/wt1'
-    await act(async () => emitAttempt({ worktreeId: id, attemptId: 9, phase: 'started' }))
+    await act(async () =>
+      emitAttempt({ executionHostId: 'local', worktreeId: id, attemptId: 9, phase: 'started' })
+    )
     await act(async () =>
       emitAttempt({
+        executionHostId: 'local',
         worktreeId: id,
         attemptId: 9,
         phase: 'finished',
@@ -299,12 +314,18 @@ describe('AutoRenameFailedDialog retry', () => {
   it('follows an automatic attempt that starts and finishes while the dialog is open', async () => {
     await renderFailure()
     await act(async () =>
-      emitAttempt({ worktreeId: 'repo1::/path/wt1', attemptId: 7, phase: 'started' })
+      emitAttempt({
+        executionHostId: 'local',
+        worktreeId: 'repo1::/path/wt1',
+        attemptId: 7,
+        phase: 'started'
+      })
     )
     expect(button('Dismiss')?.disabled).toBe(true)
     expect(button('Naming branch…')).toBeDefined()
     await act(async () =>
       emitAttempt({
+        executionHostId: 'local',
         worktreeId: 'repo1::/path/wt1',
         attemptId: 7,
         phase: 'finished',
@@ -324,18 +345,48 @@ describe('AutoRenameFailedDialog sessions and focus', () => {
     vi.restoreAllMocks()
   })
 
-  function Controlled({ open }: { open: boolean }) {
+  function Controlled({
+    open,
+    host = 'local',
+    onOpenChange = ignoreOpenChange
+  }: {
+    open: boolean
+    host?: ExecutionHostId
+    onOpenChange?: (open: boolean) => void
+  }) {
     return (
       <AutoRenameFailedDialog
         open={open}
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         worktreeId="repo1::/path/wt1"
-        executionHostId="local"
+        executionHostId={host}
         worktreeName="Nautilus"
         error={EXCERPT_ERROR}
       />
     )
   }
+
+  it('never lets a local attempt drive a same-id dialog on another host', async () => {
+    getBranchRenameFailureOutput.mockResolvedValue(null)
+    const onOpenChange = vi.fn()
+    await act(async () =>
+      root.render(<Controlled open host="runtime:paired-env" onOpenChange={onOpenChange} />)
+    )
+    const event = { executionHostId: 'local', worktreeId: 'repo1::/path/wt1' } as const
+    await act(async () => emitAttempt({ ...event, attemptId: 3, phase: 'started' }))
+    expect(button('Dismiss')?.disabled).toBe(false)
+    await act(async () =>
+      emitAttempt({
+        ...event,
+        attemptId: 3,
+        phase: 'finished',
+        outcome: { kind: 'renamed' },
+        finishedAt: 1
+      })
+    )
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(EXCERPT_ERROR)
+  })
 
   it('ignores an availability reply from a closed session after reopening', async () => {
     getBranchRenameFailureOutput.mockResolvedValue(null)
@@ -375,6 +426,25 @@ describe('AutoRenameFailedDialog sessions and focus', () => {
     button('Dismiss')?.focus()
     await act(async () => frames.splice(0).forEach((frame) => frame(0)))
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
+  })
+
+  it('does not focus a dialog that started closing before the queued focus runs', async () => {
+    const frames = queueFrames()
+    await renderFailure()
+    retryBranchAutoRename.mockResolvedValue({
+      attemptId: 1,
+      outcome: { kind: 'nothing-yet' },
+      finishedAt: 1
+    })
+    const tryAgain = button('Try again')
+    tryAgain?.focus()
+    await act(async () => tryAgain?.click())
+    // Radix keeps a closing dialog connected, marked closed, through its exit animation.
+    document.querySelector('[role="dialog"]')?.setAttribute('data-state', 'closed')
+    document.body.focus()
+    tryAgain?.blur()
+    await act(async () => frames.splice(0).forEach((frame) => frame(0)))
+    expect(document.activeElement).not.toBe(button('Try again'))
   })
 
   it('does not focus a reopened dialog from the previous session’s queued focus', async () => {

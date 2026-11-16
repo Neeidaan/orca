@@ -46,7 +46,11 @@ import {
   type FirstWorkContextSource
 } from './first-work-rename-verdicts'
 import { fenceFirstWorkDeps } from './first-work-rename-fence'
-import { recheckBeforeRename } from './first-work-rename-recheck'
+import {
+  recheckBeforeRename,
+  renameGuardsPass,
+  syncRenameGuards
+} from './first-work-rename-recheck'
 
 export type { FirstWorkContextSource } from './first-work-rename-verdicts'
 export {
@@ -226,6 +230,8 @@ async function runAutoRename(
     return failed('could not prepare generation environment', false)
   }
 
+  // Target preparation awaits; a replaced workspace must not launch generation.
+  attempt.assertIncarnation()
   const generated = await generateBranchNameFromContext(resolved.context, params, target)
   // Generation can outlive the start of a WSL move.
   if (isWslMoveRepoBlocked(repo)) {
@@ -258,13 +264,24 @@ async function runAutoRename(
       if (!newBranch || newBranch === currentBranch) {
         return stop('no-distinct-name', `no distinct unique branch name for slug "${slug}"`, true)
       }
-      // Every guard is rechecked here, after the last await, immediately before the rename.
       const blocked = await recheckBeforeRename(worktreeId, currentBranch, exec, deps, attempt)
       if (blocked) {
         return blocked
       }
-      // Name the source branch: a terminal checkout after the recheck must not redirect the rename.
-      await exec(['branch', '-m', currentBranch, newBranch])
+      try {
+        // Name the source branch so a later checkout cannot redirect the rename. The runner runs
+        // canStart after admission, immediately before spawning: the guards' final check point.
+        await gitExecFileAsync(['branch', '-m', currentBranch, newBranch], {
+          cwd: worktreePath,
+          canStart: () => renameGuardsPass(worktreeId, deps, attempt)
+        })
+      } catch (error) {
+        const refused = syncRenameGuards(worktreeId, deps, attempt)
+        if (refused) {
+          return refused
+        }
+        throw error
+      }
       return newBranch
     }
   )

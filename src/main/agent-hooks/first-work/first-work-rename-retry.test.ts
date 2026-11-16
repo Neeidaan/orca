@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '../../../shared/worktree/id'
 
-const { gitExecFileAsyncMock, generateBranchNameMock, resolveParamsMock } = vi.hoisted(() => ({
+const {
+  gitExecFileAsyncMock,
+  generateBranchNameMock,
+  resolveParamsMock,
+  resolveGenerationTargetMock
+} = vi.hoisted(() => ({
   gitExecFileAsyncMock: vi.fn(),
   generateBranchNameMock: vi.fn(),
-  resolveParamsMock: vi.fn()
+  resolveParamsMock: vi.fn(),
+  resolveGenerationTargetMock: vi.fn()
 }))
 
 vi.mock('../../git/command-runner/git-exec-file', async (importOriginal) => ({
@@ -19,7 +25,7 @@ vi.mock('../../text-generation/commit-message-text-generation', () => ({
   resolveCommitMessageSettings: resolveParamsMock
 }))
 vi.mock('./first-work-generation-target', () => ({
-  resolveGenerationTarget: async () => ({ kind: 'local' })
+  resolveGenerationTarget: resolveGenerationTargetMock
 }))
 vi.mock('../../ipc/worktree-branch-name', () => ({
   computeBranchName: (leaf: string) => leaf,
@@ -36,6 +42,7 @@ import {
   type FirstWorkRetryDeps
 } from './first-work-rename-retry'
 import { resetNativeFirstMessageReads } from './first-work-native-first-message'
+import type { JournalFirstSubmittedPrompt } from '../../native-chat/agent-session-journal/journal-domain-first-submitted-prompt'
 import {
   WORKTREE_ID,
   gitResponder,
@@ -90,6 +97,8 @@ beforeEach(() => {
     gitResponder({ currentBranch: 'Nautilus-8', hasUpstream: false })
   )
   resolveParamsMock.mockReturnValue({ ok: true, params: { agentId: 'claude' } })
+  resolveGenerationTargetMock.mockReset()
+  resolveGenerationTargetMock.mockResolvedValue({ kind: 'local' })
 })
 
 afterEach(() => {
@@ -171,6 +180,99 @@ describe('retryFirstWorkRename', () => {
     sessions.resolve(['chat'])
     await expect(second).resolves.toMatchObject({ outcome: { kind: 'renamed' } })
     expect(generateBranchNameMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('submits no further native reads once an expired attempt has no live joiner', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const firstRead = deferred<JournalFirstSubmittedPrompt>()
+    const readFirst = vi.fn((sessionId: string) =>
+      sessionId === 'chat-1' ? firstRead.promise : Promise.resolve({ kind: 'none' as const })
+    )
+    const { deps } = makeRetryDeps({
+      nativeReads: () => ({ listSessionIds: async () => ['chat-1', 'chat-2'], readFirst })
+    })
+    const expired = retryFirstWorkRename(WORKTREE_ID, deps)
+    await vi.advanceTimersByTimeAsync(FIRST_WORK_RETRY_LOOKUP_DEADLINE_MS)
+    await expect(expired).resolves.toMatchObject({ outcome: { kind: 'deferred' } })
+    firstRead.resolve({ kind: 'none' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(readFirst.mock.calls.map(([id]) => id)).toEqual(['chat-1'])
+  })
+
+  it('keeps reading for a live joiner after the original attempt expired', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const firstRead = deferred<JournalFirstSubmittedPrompt>()
+    const readFirst = vi.fn((sessionId: string): Promise<JournalFirstSubmittedPrompt> =>
+      sessionId === 'chat-1'
+        ? firstRead.promise
+        : Promise.resolve({ kind: 'found', prompt: 'Add audit log', submittedAt: 300, sequence: 1 })
+    )
+    const { deps } = makeRetryDeps({
+      nativeReads: () => ({ listSessionIds: async () => ['chat-1', 'chat-2'], readFirst })
+    })
+    const expired = retryFirstWorkRename(WORKTREE_ID, deps)
+    await vi.advanceTimersByTimeAsync(FIRST_WORK_RETRY_LOOKUP_DEADLINE_MS)
+    await expired
+    generateBranchNameMock.mockResolvedValue({ success: true, slug: 'add-audit-log' })
+    const paramsBefore = resolveParamsMock.mock.calls.length
+    const joiner = retryFirstWorkRename(WORKTREE_ID, deps)
+    // The lookup (and its join) starts in the same turn as the second params resolution.
+    await vi.waitFor(() => expect(resolveParamsMock).toHaveBeenCalledTimes(paramsBefore + 1))
+    firstRead.resolve({ kind: 'none' })
+    await expect(joiner).resolves.toMatchObject({ outcome: { kind: 'renamed' } })
+    expect(readFirst.mock.calls.map(([id]) => id)).toEqual(['chat-1', 'chat-2'])
+  })
+
+  it('launches no generation for a workspace replaced while the target was prepared', async () => {
+    const target = deferred<{ kind: 'local' }>()
+    resolveGenerationTargetMock.mockReturnValueOnce(target.promise)
+    let incarnation = 'A'
+    const { deps } = makeRetryDeps({
+      runGit: changesGit(' a.ts | 1 +\n'),
+      readIncarnation: () => incarnation
+    })
+    const result = retryFirstWorkRename(WORKTREE_ID, deps)
+    await vi.waitFor(() => expect(resolveGenerationTargetMock).toHaveBeenCalled())
+    incarnation = 'B'
+    target.resolve({ kind: 'local' })
+    await expect(result).resolves.toMatchObject({
+      outcome: { kind: 'ineligible', reason: 'unavailable' }
+    })
+    expect(generateBranchNameMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses the rename at child admission when a guard flips after the final recheck', async () => {
+    generateBranchNameMock.mockResolvedValue({ success: true, slug: 'fix-auth' })
+    const admission = deferred<void>()
+    const spawned: string[][] = []
+    const respond = gitResponder({ currentBranch: 'Nautilus-8', hasUpstream: false })
+    gitExecFileAsyncMock.mockImplementation(
+      async (args: string[], options?: { canStart?: () => boolean }) => {
+        if (args[0] === 'branch' && args[1] === '-m') {
+          // Mirrors the runner: canStart runs after admission, immediately before spawning.
+          await admission.promise
+          if (options?.canStart?.() === false) {
+            throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })
+          }
+          spawned.push(args)
+        }
+        return respond(args)
+      }
+    )
+    const { deps } = makeRetryDeps({ runGit: changesGit(' a.ts | 1 +\n') })
+    const result = retryFirstWorkRename(WORKTREE_ID, deps)
+    await vi.waitFor(() =>
+      expect(gitExecFileAsyncMock).toHaveBeenCalledWith(
+        expect.arrayContaining(['branch', '-m']),
+        expect.anything()
+      )
+    )
+    deps.getSettings().autoRenameBranchFromWork = false
+    admission.resolve()
+    await expect(result).resolves.toMatchObject({
+      outcome: { kind: 'ineligible', reason: 'setting-off' }
+    })
+    expect(spawned).toEqual([])
   })
 
   it('renames nothing when the branch stops being eligible during generation', async () => {

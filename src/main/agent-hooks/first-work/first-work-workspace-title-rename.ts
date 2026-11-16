@@ -49,6 +49,8 @@ export async function runFolderWorkspaceTitleAutoRename(
     return failed('could not prepare generation environment', false)
   }
 
+  // Target preparation awaits; a replaced workspace must not launch generation.
+  attempt.assertIncarnation()
   const generated = await generateBranchNameFromContext(
     resolved.context,
     resolvedParams.params,

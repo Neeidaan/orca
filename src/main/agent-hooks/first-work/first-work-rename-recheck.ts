@@ -7,7 +7,51 @@ import type { FirstWorkBranchRenameDeps } from './first-work-branch-rename'
 import type { FirstWorkAttempt, FirstWorkRenameVerdict } from './first-work-rename-attempts'
 import { verdictBuilders } from './first-work-rename-verdicts'
 
-/** Rechecks every guard immediately before the branch rename; synchronous guards run after the last await. */
+/** The mutable guards with no awaits, so a caller can run them in the same turn as the mutation. */
+export function syncRenameGuards(
+  worktreeId: string,
+  deps: FirstWorkBranchRenameDeps,
+  attempt: FirstWorkAttempt
+): FirstWorkRenameVerdict | null {
+  const { stop, defer } = verdictBuilders(worktreeId, deps)
+  attempt.assertIncarnation()
+  if (!deps.getSettings().autoRenameBranchFromWork) {
+    return {
+      ...stop('setting-off', 'auto-rename was turned off during generation'),
+      settles: false
+    }
+  }
+  const repo = deps.getRepo(getRepoIdFromWorktreeId(worktreeId))
+  if (!repo || resolveGitRouteForHost(getRepoExecutionHostId(repo)).kind !== 'local') {
+    return { ...stop('unavailable', 'project route changed during generation'), settles: false }
+  }
+  if (isWslMoveRepoBlocked(repo)) {
+    return defer('project-moving', 'a WSL move started before the branch rename')
+  }
+  if (!deps.canRenameOrcaCreatedBranch(worktreeId)) {
+    return stop('name-chosen', 'worktree is not eligible for auto-rename', true)
+  }
+  return null
+}
+
+/** Side-effect-free form of {@link syncRenameGuards} for the runner's admission-time `canStart`. */
+export function renameGuardsPass(
+  worktreeId: string,
+  deps: FirstWorkBranchRenameDeps,
+  attempt: FirstWorkAttempt
+): boolean {
+  const repo = deps.getRepo(getRepoIdFromWorktreeId(worktreeId))
+  return (
+    attempt.isIncarnationCurrent() &&
+    deps.getSettings().autoRenameBranchFromWork === true &&
+    !!repo &&
+    resolveGitRouteForHost(getRepoExecutionHostId(repo)).kind === 'local' &&
+    !isWslMoveRepoBlocked(repo) &&
+    deps.canRenameOrcaCreatedBranch(worktreeId)
+  )
+}
+
+/** The Git-backed rechecks before the rename; the synchronous guards run again at child admission. */
 export async function recheckBeforeRename(
   worktreeId: string,
   currentBranch: string,
@@ -35,22 +79,5 @@ export async function recheckBeforeRename(
   if (probe.outcome === 'probe-failed') {
     return defer('interrupted', `upstream probe failed after generation: ${probe.message}`)
   }
-  attempt.assertIncarnation()
-  if (!deps.getSettings().autoRenameBranchFromWork) {
-    return {
-      ...stop('setting-off', 'auto-rename was turned off during generation'),
-      settles: false
-    }
-  }
-  const repo = deps.getRepo(getRepoIdFromWorktreeId(worktreeId))
-  if (!repo || resolveGitRouteForHost(getRepoExecutionHostId(repo)).kind !== 'local') {
-    return { ...stop('unavailable', 'project route changed during generation'), settles: false }
-  }
-  if (isWslMoveRepoBlocked(repo)) {
-    return defer('project-moving', 'a WSL move started before the branch rename')
-  }
-  if (!deps.canRenameOrcaCreatedBranch(worktreeId)) {
-    return stop('name-chosen', 'worktree is not eligible for auto-rename', true)
-  }
-  return null
+  return syncRenameGuards(worktreeId, deps, attempt)
 }

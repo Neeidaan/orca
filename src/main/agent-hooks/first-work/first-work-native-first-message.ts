@@ -11,8 +11,14 @@ export type NativeFirstMessageReads = {
   readFirst: (sessionId: string, sinceMs: number) => Promise<JournalFirstSubmittedPrompt>
 }
 
+type PhysicalRead = {
+  promise: Promise<NativeFirstMessageLookup>
+  /** Each joined attempt's liveness; the scan continues only while one still wants the result. */
+  wanters: Set<() => boolean>
+}
+
 // Leases outlive a logical timeout until the physical read settles, so expiries cannot pile up reads.
-const physicalReads = new Map<string, Promise<NativeFirstMessageLookup>>()
+const physicalReads = new Map<string, PhysicalRead>()
 export const MAX_NATIVE_FIRST_MESSAGE_READS = 2
 
 export function resetNativeFirstMessageReads(): void {
@@ -22,23 +28,30 @@ export function resetNativeFirstMessageReads(): void {
 /** Joins a draining read for the same incarnation before applying feature-wide capacity. */
 export function leaseNativeFirstMessageRead(
   incarnation: string,
-  read: () => Promise<NativeFirstMessageLookup>
+  wanted: () => boolean,
+  read: (stillWanted: () => boolean) => Promise<NativeFirstMessageLookup>
 ): Promise<NativeFirstMessageLookup> {
   const draining = physicalReads.get(incarnation)
   if (draining) {
-    return draining
+    draining.wanters.add(wanted)
+    return draining.promise
   }
   if (physicalReads.size >= MAX_NATIVE_FIRST_MESSAGE_READS) {
     return Promise.resolve({ kind: 'unreadable' })
   }
-  const physical = read().catch((): NativeFirstMessageLookup => ({ kind: 'unreadable' }))
-  physicalReads.set(incarnation, physical)
-  void physical.finally(() => {
-    if (physicalReads.get(incarnation) === physical) {
+  const wanters = new Set([wanted])
+  const stillWanted = () => [...wanters].some((isWanted) => isWanted())
+  const entry: PhysicalRead = {
+    wanters,
+    promise: read(stillWanted).catch((): NativeFirstMessageLookup => ({ kind: 'unreadable' }))
+  }
+  physicalReads.set(incarnation, entry)
+  void entry.promise.finally(() => {
+    if (physicalReads.get(incarnation) === entry) {
       physicalReads.delete(incarnation)
     }
   })
-  return physical
+  return entry.promise
 }
 
 type Candidate = { prompt: string; submittedAt: number; sequence: number; sessionId: string }
@@ -57,10 +70,15 @@ function precedes(left: Candidate, right: Candidate): boolean {
 /** The earliest qualifying native-chat message of the workspace, one point read at a time. */
 export async function readNativeFirstMessage(
   reads: NativeFirstMessageReads,
-  sinceMs: number
+  sinceMs: number,
+  stillWanted: () => boolean = () => true
 ): Promise<NativeFirstMessageLookup> {
   let earliest: Candidate | null = null
   for (const sessionId of await reads.listSessionIds()) {
+    // Abandoned: submit no further reads, and never report a partial scan as complete.
+    if (!stillWanted()) {
+      return { kind: 'unreadable' }
+    }
     const first = await reads.readFirst(sessionId, sinceMs)
     if (first.kind === 'incomplete') {
       return { kind: 'unreadable' }

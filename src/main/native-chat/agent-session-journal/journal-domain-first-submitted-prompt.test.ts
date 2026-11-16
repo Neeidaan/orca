@@ -1,7 +1,10 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { domainLifecycleFixture } from './journal-domain-lifecycle.test-fixture'
 import { readJournalSqlPoint } from './journal-sql-point-read'
-import { FIRST_SUBMITTED_PROMPT_SCAN_LIMIT } from './journal-domain-first-submitted-prompt'
+import {
+  FIRST_SUBMITTED_PROMPT_SCAN_LIMIT,
+  FIRST_SUBMITTED_PROMPT_SQL
+} from './journal-domain-first-submitted-prompt'
 import type { AgentJournalMessageItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 
 const cleanup: (() => void)[] = []
@@ -70,12 +73,37 @@ it('pages past text-less candidates to the first message with text', async () =>
   expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
 })
 
+it('reads past many text-less candidates in one query, not one per page', async () => {
+  const f = domainLifecycleFixture(cleanup)
+  for (let index = 0; index < 100; index++) {
+    await send(f, `blank-${index}`, '', 200 + index)
+  }
+  await send(f, 'named', 'Add password reset', 400)
+  const prepare = vi.spyOn(f.db, 'prepare')
+  expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
+  const candidateQueries = prepare.mock.calls.filter(
+    ([sql]) => String(sql).includes('journal_item_aliases') && String(sql).includes('submitted_at')
+  )
+  expect(candidateQueries).toHaveLength(1)
+})
+
 it('reports an incomplete scan instead of a miss once the bound is reached', async () => {
   const f = domainLifecycleFixture(cleanup)
   for (let index = 0; index <= FIRST_SUBMITTED_PROMPT_SCAN_LIMIT; index++) {
     await send(f, `blank-${index}`, '', 200 + index)
   }
   expect(first(f, 100)).toEqual({ kind: 'incomplete' })
+})
+
+it('matches items and aliases by keyed lookup, never by rescanning item history', () => {
+  const f = domainLifecycleFixture(cleanup)
+  const plan = f.db
+    .prepare(`EXPLAIN QUERY PLAN ${FIRST_SUBMITTED_PROMPT_SQL}`)
+    .all('chat', 'e', 0, 'chat', 'e', 'chat', 'e', 'chat', 'e', 'chat', 'e', 1)
+    .map((row) => String(row.detail))
+  expect(plan.length).toBeGreaterThan(0)
+  // Only the session's submissions may be walked; items and aliases must be point lookups.
+  expect(plan.filter((detail) => /^SCAN (i|a|o)\b/.test(detail))).toEqual([])
 })
 
 it('never treats a message without a submission row as a candidate', async () => {

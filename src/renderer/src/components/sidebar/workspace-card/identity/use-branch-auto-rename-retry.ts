@@ -101,7 +101,12 @@ export function useBranchAutoRenameRetry(args: {
         }
       })
     const unsubscribe = window.api.worktrees.onBranchAutoRenameAttempt((event) => {
-      if (event.worktreeId !== worktreeId || token !== session.current) {
+      // Only this desktop's own attempts exist; a same-id workspace on another host never follows them.
+      if (
+        event.executionHostId !== (executionHostId ?? 'local') ||
+        event.worktreeId !== worktreeId ||
+        token !== session.current
+      ) {
         return
       }
       if (event.phase === 'started') {

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode
+} from 'react'
 import { AlertCircle, Check, Copy, LoaderCircle } from 'lucide-react'
 import {
   Dialog,
@@ -66,6 +74,12 @@ export function AutoRenameFailedDialog({
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
   const [dismissing, setDismissing] = useState(false)
   const tryAgainRef = useRef<HTMLButtonElement>(null)
+  // Each open starts a session; queued focus from an earlier session or a closed dialog is void.
+  const [openSession] = useState(() => ({ current: 0, open }))
+  useLayoutEffect(() => {
+    openSession.current++
+    openSession.open = open
+  }, [open, openSession])
   const dismissRef = useRef<HTMLButtonElement>(null)
   // A final retry result can clear the persisted error while the dialog stays open on its reason.
   const [shownError, setShownError] = useState(error)
@@ -84,13 +98,18 @@ export function AutoRenameFailedDialog({
       }
       const target = outcome.kind === 'ineligible' ? dismissRef : tryAgainRef
       const focusedAtFinish = document.activeElement
+      const sessionAtFinish = openSession.current
       requestAnimationFrame(() => {
         // Re-validate at run time: the dialog may have closed or reopened, or the user moved focus.
         const button = target.current
         const active = document.activeElement
         if (
           button &&
+          openSession.current === sessionAtFinish &&
+          openSession.open &&
           dialog.isConnected &&
+          // A closing dialog stays connected through its exit animation.
+          dialog.getAttribute('data-state') === 'open' &&
           button.closest('[role="dialog"]') === dialog &&
           // Unchanged, or dropped to <body> because the focused Try again just unmounted.
           (active === focusedAtFinish || active === document.body)
