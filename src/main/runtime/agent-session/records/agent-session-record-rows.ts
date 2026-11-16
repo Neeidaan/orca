@@ -84,12 +84,11 @@ export function loadAgentSessionStoreRecordRow(
   const value = parsed.ok ? parsed.value : json
   if (parsed.ok && isReadableAgentSessionStoreRecord(sessionId, value)) {
     const { record } = decodePersistedAgentSessionRecord(value)
+    const lease = withoutRetiredLeaseLatches(record.lease)
+    // The same leases installation marks, so a retried installation agrees with this view.
     state.records.set(sessionId, {
       ...record,
-      lease: {
-        ...withoutRetiredLeaseLatches(record.lease),
-        ...(unreconciled ? { unreconciled: true } : {})
-      }
+      lease: unreconciled && agentSessionLeaseMayBeHeld(lease) ? { ...lease, unreconciled: true } : lease
     })
     return
   }
