@@ -184,33 +184,17 @@ export abstract class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitFo
   }
 
   protected getPtyIdsForExplicitTabClose(worktreeId: string, tabId: string): string[] {
-    return [...(this.getPtyIdsByTabForExplicitClose(worktreeId, tabId).get(tabId) ?? [])]
-  }
-
-  /** One pass over PTYs and leaves; `onlyTabId` keeps a single-tab close from grouping the rest. */
-  protected getPtyIdsByTabForExplicitClose(
-    worktreeId: string,
-    onlyTabId?: string
-  ): Map<string, Set<string>> {
-    const byTab = new Map<string, Set<string>>()
-    const add = (tabId: string | null | undefined, ptyId: string): void => {
-      if (!tabId || (onlyTabId !== undefined && tabId !== onlyTabId)) {
-        return
-      }
-      const ptyIds = byTab.get(tabId) ?? new Set<string>()
-      ptyIds.add(ptyId)
-      byTab.set(tabId, ptyIds)
-    }
+    const ptyIds = new Set<string>()
     for (const pty of this.ptysById.values()) {
-      if (pty.connected && pty.worktreeId === worktreeId) {
-        add(this.paneOfPty(pty).tabId, pty.ptyId)
+      if (pty.connected && pty.worktreeId === worktreeId && this.paneOfPty(pty).tabId === tabId) {
+        ptyIds.add(pty.ptyId)
       }
     }
     for (const leaf of this.leaves.values()) {
-      if (leaf.worktreeId === worktreeId && leaf.ptyId) {
-        add(leaf.tabId, leaf.ptyId)
+      if (leaf.worktreeId === worktreeId && leaf.tabId === tabId && leaf.ptyId) {
+        ptyIds.add(leaf.ptyId)
       }
     }
-    return byTab
+    return [...ptyIds]
   }
 }
