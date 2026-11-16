@@ -50,7 +50,7 @@ export async function renameCreatedWorktreeOnFirstWork(
   const respond = gitResponder({ currentBranch: branch, hasUpstream: false })
   gitMock.mockImplementation(async (args: string[]) => {
     if (args[0] === 'branch' && args[1] === '-m') {
-      branch = args[2]
+      branch = args.at(-1) ?? branch
     }
     return respond(args)
   })

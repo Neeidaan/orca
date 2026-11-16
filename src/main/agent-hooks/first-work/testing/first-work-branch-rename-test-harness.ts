@@ -71,6 +71,7 @@ export function makeBranchRenameDeps(
     renameWorktreeFolder,
     setRenameError,
     deps: {
+      readIncarnation: (worktreeId) => worktreeId,
       getSettings: () => settings,
       getRepo: () => repo,
       getAgentEnvResolvers: () => undefined,
