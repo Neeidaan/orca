@@ -234,7 +234,6 @@ describe('WorkerThreadChildProcessHost over a message channel', () => {
   }, 20_000)
 })
 
-// Real thread death closes child pipes; abandoned probes depend on that graceful stop instead of PID-addressed killing.
 describe('WorkerThreadChildProcessHost with a stalled worker', () => {
   it('queues a bounded number of optional launches and leaves the rest to the caller', () => {
     // A live worker that never answers: every posted launch stays pending.
@@ -252,6 +251,7 @@ describe('WorkerThreadChildProcessHost with a stalled worker', () => {
   })
 })
 
+// Real thread death closes child pipes; abandoned probes depend on that graceful stop instead of PID-addressed killing.
 describe('WorkerThreadChildProcessHost on a real worker thread', () => {
   let directory = ''
   let entryPath = ''
