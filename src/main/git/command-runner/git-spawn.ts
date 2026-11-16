@@ -156,7 +156,11 @@ export async function withGitAdmission(
   }
 }
 
-export function gitSpawn(args: string[], callerOptions: GitSpawnOptions): ChildProcess {
+/** The program, argv and spawn options gitSpawn launches. */
+export function gitSpawnLaunch(
+  args: string[],
+  callerOptions: GitSpawnOptions
+): { binary: string; args: string[]; options: SpawnOptions } {
   const options = routeLocalGitOptions(callerOptions)
   const { wslDistro, admissionTier: _admissionTier, hostGit: _hostGit, ...spawnOptions } = options
   const resolved = resolveGitCommand(args, {
@@ -164,15 +168,24 @@ export function gitSpawn(args: string[], callerOptions: GitSpawnOptions): ChildP
     ...(wslDistro ? { wslDistro } : {}),
     ...(spawnOptions.env ? { env: spawnOptions.env } : {})
   })
-  return spawnNativeProcess(
-    resolved.binary,
-    resolved.args,
-    {
+  return {
+    binary: resolved.binary,
+    args: resolved.args,
+    options: {
       ...spawnOptions,
       env: untranslatedGitOutputEnv(spawnOptions.env ?? process.env),
       windowsHide: true,
       cwd: resolved.cwd
-    },
+    }
+  }
+}
+
+export function gitSpawn(args: string[], callerOptions: GitSpawnOptions): ChildProcess {
+  const launch = gitSpawnLaunch(args, callerOptions)
+  return spawnNativeProcess(
+    launch.binary,
+    launch.args,
+    launch.options,
     undefined,
     recordSubprocessSpawn
   )

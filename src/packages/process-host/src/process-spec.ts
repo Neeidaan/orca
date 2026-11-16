@@ -36,6 +36,8 @@ export type ProcessSpec = {
   onChildTerminated?: () => void
   /** Every raw stderr chunk as it arrives, including any past the capture cap. */
   onStderr?: (chunk: Buffer | string) => void
+  /** Starts the child somewhere other than this thread; null keeps the in-thread spawn. */
+  launch?: (spec: ProcessSpec) => ChildProcess | null
 }
 
 export type PipedProcessSpec = Omit<ProcessSpec, 'stdio'> & {

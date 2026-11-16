@@ -43,7 +43,7 @@ export function runProcess(
     const terminationReporter = createChildTerminationReporter(spec.onChildTerminated)
     let child: ChildProcess
     try {
-      child = spawnProcess(spec)
+      child = spec.launch?.(spec) ?? spawnProcess(spec)
     } catch (error) {
       terminationReporter.report()
       reject(error)

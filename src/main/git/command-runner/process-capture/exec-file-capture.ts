@@ -10,7 +10,7 @@ import { killSpawnedCommandTree } from './spawned-command-tree-kill'
 import { DEFAULT_GIT_MAX_BUFFER } from '../git-exec-options'
 import type { GitAdmissionTier } from '../../../../shared/rpc-contract/source-control/git-admission-tier-params'
 
-import { spawnedExecFile, workerExecFile } from './worker-exec-file'
+import { spawnedExecFile, windowsWorkerExecFile, workerExecFile } from './worker-exec-file'
 import type { WorkerThreadChildProcess } from '../../../worker-thread-child-process/worker-thread-child-process'
 
 export type ExecFileCaptureOptions = Omit<ExecFileOptions, 'timeout'> & {
@@ -239,7 +239,8 @@ export function execFileCapture(
                     recordSubprocessSpawn
                   )
                 )
-              : execFile(command, args, captureOptions, complete)
+              : (windowsWorkerExecFile(command, args, captureOptions, complete) ??
+                execFile(command, args, captureOptions, complete))
           if (useWorker || !ownedPosixGroup) {
             recordSubprocessSpawn(command, args, performance.now() - spawnStartedAt)
           }
@@ -252,7 +253,7 @@ export function execFileCapture(
 
       child.once('error', (error) => {
         // A lost worker may have spawned a child whose PID never reached us; only close proves termination.
-        if (!useWorker && !child?.pid) {
+        if (!(child && 'id' in child) && !child?.pid) {
           reportChildTerminated()
         }
         if (!terminating) {

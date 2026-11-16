@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -143,6 +144,26 @@ describe('WorkerThreadChildProcessHost over a message channel', () => {
     expect(stderr.join('')).toBe('bye')
     expect(child.exitCode).toBe(7)
     expect(child.kill()).toBe(false)
+  }, 20_000)
+
+  it('serves runProcess as its launched child, stdin bytes included', async () => {
+    const host = makeConnectedHost()
+    const result = await runProcess({
+      program: process.execPath,
+      args: ['-e', ECHO_SCRIPT],
+      input: new TextEncoder().encode('{"id":2}\n'),
+      launch: (spec) =>
+        host.spawn({
+          program: spec.program,
+          args: [...(spec.args ?? [])]
+        }) as unknown as ChildProcess
+    })
+    expect(result).toMatchObject({
+      code: 7,
+      stdout: 'echo:{"id":2}\n',
+      stderr: 'bye',
+      timedOut: false
+    })
   }, 20_000)
 
   it('passes env and cwd through to the child', async () => {

@@ -1,7 +1,10 @@
 import { createOutputSink } from '@orca/process-host/bounded-output-sink'
 import type { ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { spawnProcessOnWorkerThread } from '../../../worker-thread-child-process/worker-thread-child-process'
+import {
+  spawnOffMainThreadOnWindows,
+  spawnProcessOnWorkerThread
+} from '../../../worker-thread-child-process/worker-thread-child-process'
 import type { WorkerThreadChildProcess } from '../../../worker-thread-child-process/worker-thread-child-process'
 
 type CaptureOptions = {
@@ -37,6 +40,30 @@ export function workerExecFile(
       ...(options.ownedPosixGroup ? { terminationBarrier: true as const } : {})
     })
   )
+}
+
+/** Windows: capture a worker-owned child so process creation stays off main; null when the worker cannot start. */
+export function windowsWorkerExecFile(
+  command: string,
+  args: string[],
+  options: CaptureOptions,
+  callback: CaptureCallback
+): WorkerThreadChildProcess | null {
+  const child = spawnOffMainThreadOnWindows({
+    program: command,
+    args,
+    cwd: options.cwd instanceof URL ? fileURLToPath(options.cwd) : options.cwd,
+    env: options.env
+  })
+  // execFile's failure message, so callers matching on it see no difference.
+  return child
+    ? spawnedExecFile(
+        command,
+        { ...options, errorCommand: `${command} ${args.join(' ')}` },
+        callback,
+        () => child
+      )
+    : null
 }
 
 /** Capture either host's real child using the same byte limits and completion contract. */

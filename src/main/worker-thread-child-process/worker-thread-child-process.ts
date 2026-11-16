@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
+import type { ChildProcess } from 'node:child_process'
 import type { Worker } from 'node:worker_threads'
+import type { ProcessSpec } from '@orca/process-host/process-spec'
 import { spawnWorkerThread } from '../worker-threads/worker-thread-spawn'
 import { LazyWorkerThreadHost } from '../worker-threads/lazy-worker-thread-host'
 import type { WorkerThreadFactory } from '../worker-threads/worker-thread-transport'
@@ -44,12 +46,15 @@ class WorkerThreadChildStdin extends EventEmitter {
     super()
   }
 
-  write(data: string): boolean {
+  write(data: string | Uint8Array): boolean {
     this.send({ type: 'stdin-write', id: this.id, data })
     return true
   }
 
-  end(): void {
+  end(data?: string | Uint8Array): void {
+    if (data !== undefined && data.length > 0) {
+      this.write(data)
+    }
     this.send({ type: 'stdin-end', id: this.id })
   }
 }
@@ -177,6 +182,11 @@ export class WorkerThreadChildProcessHost {
     return child
   }
 
+  /** Null when the worker cannot start, so the caller can spawn in-thread instead of failing. */
+  trySpawn(spec: WorkerThreadChildSpec): WorkerThreadChildProcess | null {
+    return this.host.ensure() ? this.spawn(spec) : null
+  }
+
   private post(request: WorkerThreadChildRequest): boolean {
     const worker = this.host.current
     if (!worker || !this.children.has(request.id)) {
@@ -239,7 +249,43 @@ function defaultWorkerFactory(): Worker {
 
 let sharedHost: WorkerThreadChildProcessHost | null = null
 
-export function spawnProcessOnWorkerThread(spec: WorkerThreadChildSpec): WorkerThreadChildProcess {
+function sharedChildProcessHost(): WorkerThreadChildProcessHost {
   sharedHost ??= new WorkerThreadChildProcessHost(defaultWorkerFactory)
-  return sharedHost.spawn(spec)
+  return sharedHost
+}
+
+export function spawnProcessOnWorkerThread(spec: WorkerThreadChildSpec): WorkerThreadChildProcess {
+  return sharedChildProcessHost().spawn(spec)
+}
+
+/** Windows process creation blocks its calling thread (#27362), so routine Git/gh launches run on the worker there; null elsewhere or when the worker cannot start. */
+export function spawnOffMainThreadOnWindows(
+  spec: WorkerThreadChildSpec
+): WorkerThreadChildProcess | null {
+  if (process.platform !== 'win32') {
+    return null
+  }
+  // The worker's env is a snapshot from its start; pass the caller's view explicitly.
+  return sharedChildProcessHost().trySpawn({ ...spec, env: spec.env ?? process.env })
+}
+
+/** runProcess `launch` for Windows: plain piped specs start on the worker; any other stdio or flag keeps the in-thread spawn. */
+export function launchProcessSpecOffMainThreadOnWindows(spec: ProcessSpec): ChildProcess | null {
+  const piped =
+    spec.stdio === undefined ||
+    spec.stdio === 'pipe' ||
+    (Array.isArray(spec.stdio) &&
+      spec.stdio.length === 3 &&
+      spec.stdio.every((entry) => entry === 'pipe'))
+  if (!piped || spec.detached || spec.windowsVerbatimArguments || spec.serialization) {
+    return null
+  }
+  const child = spawnOffMainThreadOnWindows({
+    program: spec.program,
+    args: [...(spec.args ?? [])],
+    cwd: spec.cwd,
+    env: spec.env
+  })
+  // The stand-in carries the piped surface runProcess and tree termination use: stdio events, stdin, pid, kill, exit and close.
+  return child as unknown as ChildProcess | null
 }
