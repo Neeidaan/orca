@@ -16,12 +16,20 @@ export type WorkerThreadChildPort = {
 }
 
 function toErrorPayload(error: unknown): WorkerThreadChildErrorPayload {
-  if (error instanceof Error) {
-    return 'code' in error && typeof error.code === 'string'
-      ? { message: error.message, code: error.code }
-      : { message: error.message }
+  if (!(error instanceof Error)) {
+    return { message: String(error) }
   }
-  return { message: String(error) }
+  const { code, errno, syscall, path, spawnargs } = error as NodeJS.ErrnoException & {
+    spawnargs?: unknown
+  }
+  return {
+    message: error.message,
+    ...(typeof code === 'string' ? { code } : {}),
+    ...(typeof errno === 'number' ? { errno } : {}),
+    ...(typeof syscall === 'string' ? { syscall } : {}),
+    ...(typeof path === 'string' ? { path } : {}),
+    ...(Array.isArray(spawnargs) ? { spawnargs: spawnargs.map(String) } : {})
+  }
 }
 
 export function serveWorkerThreadChildProcesses(port: WorkerThreadChildPort): void {
@@ -74,14 +82,15 @@ export function serveWorkerThreadChildProcesses(port: WorkerThreadChildPort): vo
     }
     const postError = (error: Error): void =>
       port.postMessage({ type: 'error', id, error: toErrorPayload(error) })
+    const postStdinError = (error: Error): void =>
+      port.postMessage({ type: 'error', id, error: toErrorPayload(error), stdin: true })
     child.on('spawn', () => port.postMessage({ type: 'spawn', id, pid: child.pid }))
     child.stdout?.on('data', (chunk: Buffer) => postOutput('stdout', chunk))
     child.stderr?.on('data', (chunk: Buffer) => postOutput('stderr', chunk))
     // An unhandled stream error would take the whole worker, and every other child, down.
     child.stdout?.on('error', () => {})
     child.stderr?.on('error', () => {})
-    // The stand-in surfaces stdin failures as child errors; its caller treats both alike.
-    child.stdin?.on('error', postError)
+    child.stdin?.on('error', postStdinError)
     child.on('error', postError)
     child.on('exit', (code, signal) => port.postMessage({ type: 'exit', id, code, signal }))
     child.on('close', (code, signal) => {

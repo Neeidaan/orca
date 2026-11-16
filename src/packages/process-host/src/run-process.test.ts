@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -124,6 +126,38 @@ describe('abort', () => {
       await pending
     }
   }, 20_000)
+
+  it('holds a stop until a launched child reports its pid', async () => {
+    const controller = new AbortController()
+    const onChildTerminated = vi.fn()
+    const launched = Object.assign(new EventEmitter(), {
+      pid: undefined as number | undefined,
+      exitCode: null,
+      signalCode: null,
+      stdin: Object.assign(new EventEmitter(), { end: () => {} }),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(() => true)
+    })
+    const pending = runProcess({
+      program: 'launched-elsewhere',
+      signal: controller.signal,
+      onChildTerminated,
+      launch: () => launched as unknown as ChildProcess
+    })
+    controller.abort()
+    await Promise.resolve()
+    expect(launched.kill).not.toHaveBeenCalled()
+    expect(onChildTerminated).not.toHaveBeenCalled()
+
+    launched.pid = 4242
+    launched.emit('spawn')
+    expect(launched.kill).toHaveBeenCalledOnce()
+    launched.emit('exit', null, 'SIGTERM')
+    launched.emit('close', null, 'SIGTERM')
+    await expect(pending).resolves.toMatchObject({ code: null, signal: 'SIGTERM' })
+    expect(onChildTerminated).toHaveBeenCalledOnce()
+  })
 
   it.skipIf(process.platform === 'win32')(
     'kills the process group and waits for confirmed root exit with a termination barrier',

@@ -24,6 +24,14 @@ type CaptureCallback = (
   stderr: string | Buffer
 ) => void
 
+function captureEncoding(options: CaptureOptions): BufferEncoding | 'buffer' {
+  const encoding = options.encoding === null ? 'buffer' : (options.encoding ?? 'utf8')
+  if (encoding !== 'buffer' && !Buffer.isEncoding(encoding)) {
+    throw new TypeError(`Unsupported output encoding: ${encoding}`)
+  }
+  return encoding
+}
+
 /** Capture a worker-owned child; the caller still owns deadlines and aborts. */
 export function workerExecFile(
   command: string,
@@ -49,6 +57,8 @@ export function windowsWorkerExecFile(
   options: CaptureOptions,
   callback: CaptureCallback
 ): WorkerThreadChildProcess | null {
+  // Reject a bad encoding before a child exists to orphan.
+  captureEncoding(options)
   const child = spawnOffMainThreadOnWindows({
     program: command,
     args,
@@ -73,10 +83,7 @@ export function spawnedExecFile<T extends ChildProcess | WorkerThreadChildProces
   callback: CaptureCallback,
   launch: () => T
 ): T {
-  const encoding = options.encoding === null ? 'buffer' : (options.encoding ?? 'utf8')
-  if (encoding !== 'buffer' && !Buffer.isEncoding(encoding)) {
-    throw new TypeError(`Unsupported output encoding: ${encoding}`)
-  }
+  const encoding = captureEncoding(options)
   const child = launch()
   const stdout = createOutputSink(options.maxBuffer)
   const stderr = createOutputSink(options.maxBuffer)

@@ -25,7 +25,7 @@ import {
 } from './host-routing/git-command-resolution'
 import { prepareWindowsHostGitEnvironment } from './host-routing/windows-host-git-environment'
 import { nonInteractiveGitEnv, untranslatedGitOutputEnv } from './git-environment/git-process-env'
-import { gitSpawn, gitSpawnLaunch } from './git-spawn'
+import { gitSpawnLaunch } from './git-spawn'
 import {
   spawnOffMainThreadOnWindows,
   type WorkerThreadChildProcess
@@ -156,7 +156,13 @@ function streamInSpan(
             })
             recordSubprocessSpawn(command.binary, command.args, performance.now() - spawnStartedAt)
           } else {
-            child = gitSpawn(args, spawnOptions)
+            child = spawnNativeProcess(
+              launch.binary,
+              launch.args,
+              launch.options,
+              undefined,
+              recordSubprocessSpawn
+            )
           }
         }
         let stopping = false

@@ -30,14 +30,11 @@ const SPAWN_FAILED_EXIT_CODE = -1
 type SendRequest = (request: WorkerThreadChildRequest) => boolean
 
 function toError(payload: WorkerThreadChildErrorPayload): Error {
-  const error: NodeJS.ErrnoException = new Error(payload.message)
-  if (payload.code) {
-    error.code = payload.code
-  }
-  return error
+  const { message, ...fields } = payload
+  return Object.assign(new Error(message), fields)
 }
 
-// Never emits: the worker reports stdin failures as child 'error' events.
+/** Native-like children get stdin pipe errors here; others see them as child 'error' events. */
 class WorkerThreadChildStdin extends EventEmitter {
   constructor(
     private readonly id: number,
@@ -73,7 +70,9 @@ export class WorkerThreadChildProcess extends EventEmitter {
 
   constructor(
     readonly id: number,
-    private readonly send: SendRequest
+    private readonly send: SendRequest,
+    /** Behave like a native piped ChildProcess: stdin pipe errors stay on stdin, and losing the worker ends the child. */
+    readonly nativeLike = false
   ) {
     super()
     this.stdin = new WorkerThreadChildStdin(id, send)
@@ -113,6 +112,13 @@ export class WorkerThreadChildProcess extends EventEmitter {
         }
         return
       case 'error':
+        if (event.stdin && this.nativeLike) {
+          // Native callers ignore stdin EPIPE and keep the real exit; an unobserved stdin error is dropped.
+          if (this.stdin.listenerCount('error') > 0) {
+            this.stdin.emit('error', toError(event.error))
+          }
+          return
+        }
         this.emitErrorIfObserved(event.error)
         return
       case 'spawn-error':
@@ -132,6 +138,19 @@ export class WorkerThreadChildProcess extends EventEmitter {
     }
   }
 
+  /** The worker is gone: native-like children close now; others keep the error-only contract. */
+  abandon(message: string): void {
+    this.emitErrorIfObserved({ message })
+    if (!this.nativeLike || this.closed) {
+      return
+    }
+    // The orphan's pipes are broken, so it ends at its next write; waiting for proof would hold Git admission forever.
+    if (this.exitCode === null && this.signalCode === null) {
+      this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+    }
+    this.receive({ type: 'close', id: this.id, code: null, signal: null })
+  }
+
   // Ignore unobserved late errors after caller detach or EventEmitter would throw fatally into main.
   private emitErrorIfObserved(payload: WorkerThreadChildErrorPayload): void {
     if (this.listenerCount('error') > 0) {
@@ -144,6 +163,9 @@ export class WorkerThreadChildProcessHost {
   private readonly host: LazyWorkerThreadHost<WorkerThreadChildEvent>
   private readonly children = new Map<number, WorkerThreadChildProcess>()
   private nextId = 1
+  // A worker that dies before answering any launch is broken (e.g. a bad entry); stop routing optional launches to it.
+  private served = false
+  private brokenBeforeServing = false
 
   constructor(factory: WorkerThreadFactory) {
     this.host = new LazyWorkerThreadHost<WorkerThreadChildEvent>({
@@ -160,9 +182,9 @@ export class WorkerThreadChildProcessHost {
     })
   }
 
-  spawn(spec: WorkerThreadChildSpec): WorkerThreadChildProcess {
+  spawn(spec: WorkerThreadChildSpec, nativeLike = false): WorkerThreadChildProcess {
     const id = this.nextId++
-    const child = new WorkerThreadChildProcess(id, (request) => this.post(request))
+    const child = new WorkerThreadChildProcess(id, (request) => this.post(request), nativeLike)
     if (this.host.ensure()) {
       this.host.clearIdleTimer()
       this.children.set(id, child)
@@ -182,9 +204,9 @@ export class WorkerThreadChildProcessHost {
     return child
   }
 
-  /** Null when the worker cannot start, so the caller can spawn in-thread instead of failing. */
+  /** A native-like child, or null when the worker cannot start or proved broken, so the caller spawns in-thread instead. */
   trySpawn(spec: WorkerThreadChildSpec): WorkerThreadChildProcess | null {
-    return this.host.ensure() ? this.spawn(spec) : null
+    return !this.brokenBeforeServing && this.host.ensure() ? this.spawn(spec, true) : null
   }
 
   private post(request: WorkerThreadChildRequest): boolean {
@@ -201,6 +223,7 @@ export class WorkerThreadChildProcessHost {
   }
 
   private route(event: WorkerThreadChildEvent): void {
+    this.served = true
     const child = this.children.get(event.id)
     if (!child) {
       return
@@ -224,13 +247,14 @@ export class WorkerThreadChildProcessHost {
     }
   }
 
-  // Worker death closes stdin for graceful stop but proves no child exit; omit close so drain windows/home locks still expire normally.
+  // Worker death closes stdin for graceful stop but proves no child exit; only native-like children close (see abandon).
   private abandonAll(message: string): void {
     const abandoned = [...this.children.values()]
     this.children.clear()
+    this.brokenBeforeServing ||= !this.served
     this.host.destroy()
     for (const child of abandoned) {
-      child.receive({ type: 'error', id: child.id, error: { message } })
+      child.abandon(message)
     }
   }
 }

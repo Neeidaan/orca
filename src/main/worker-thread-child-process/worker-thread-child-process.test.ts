@@ -166,6 +166,21 @@ describe('WorkerThreadChildProcessHost over a message channel', () => {
     })
   }, 20_000)
 
+  it('keeps the exit of a child that closes stdin unread, as a native child would', async () => {
+    const host = makeConnectedHost()
+    const result = await runProcess({
+      program: process.execPath,
+      args: ['-e', 'process.stderr.write("early"); process.exit(3)'],
+      input: 'x'.repeat(4 * 1024 * 1024),
+      launch: (spec) =>
+        host.trySpawn({
+          program: spec.program,
+          args: [...(spec.args ?? [])]
+        }) as unknown as ChildProcess
+    })
+    expect(result).toMatchObject({ code: 3, stderr: 'early', timedOut: false })
+  }, 20_000)
+
   it('passes env and cwd through to the child', async () => {
     const child = makeConnectedHost().spawn({
       program: process.execPath,
@@ -187,7 +202,12 @@ describe('WorkerThreadChildProcessHost over a message channel', () => {
     })
     const error = new Promise<NodeJS.ErrnoException>((resolve) => child.once('error', resolve))
 
-    await expect(error).resolves.toMatchObject({ code: 'ENOENT' })
+    // Missing binary and missing cwd detection read syscall and path, not just code.
+    await expect(error).resolves.toMatchObject({
+      code: 'ENOENT',
+      syscall: 'spawn orca-definitely-missing-program',
+      path: 'orca-definitely-missing-program'
+    })
   }, 20_000)
 
   it('drops an error nobody listens for instead of throwing on the main loop', async () => {

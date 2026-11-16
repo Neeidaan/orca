@@ -16,7 +16,15 @@ export type WorkerThreadChildRequest =
   | { type: 'release'; id: number }
   | { type: 'kill'; id: number; signal?: NodeJS.Signals }
 
-export type WorkerThreadChildErrorPayload = { message: string; code?: string }
+/** The fields callers read off Node's spawn errors (missing binary or cwd detection uses syscall). */
+export type WorkerThreadChildErrorPayload = {
+  message: string
+  code?: string
+  errno?: number
+  syscall?: string
+  path?: string
+  spawnargs?: string[]
+}
 
 export type WorkerThreadChildEvent =
   | { type: 'spawn'; id: number; pid: number | undefined }
@@ -24,5 +32,11 @@ export type WorkerThreadChildEvent =
   // Structured clone turns a Buffer into a plain Uint8Array.
   | { type: 'stdout' | 'stderr'; id: number; chunk: Uint8Array }
   // 'spawn-error': process creation threw, so no exit or close will follow.
-  | { type: 'error' | 'spawn-error'; id: number; error: WorkerThreadChildErrorPayload }
+  // 'stdin': the error came from the stdin pipe, not the process.
+  | {
+      type: 'error' | 'spawn-error'
+      id: number
+      error: WorkerThreadChildErrorPayload
+      stdin?: true
+    }
   | { type: 'exit' | 'close'; id: number; code: number | null; signal: NodeJS.Signals | null }

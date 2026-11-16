@@ -249,16 +249,33 @@ export function runProcess(
       graceTimer.unref?.()
     }
 
+    // A launched child reports its PID asynchronously; until then a stop would wrongly read as "never started".
+    let spawnSettled = child.pid !== undefined
+    let stopRequested = false
+    const requestStop = (): void => {
+      if (spawnSettled) {
+        stopAndSettle()
+        return
+      }
+      stopRequested = true
+    }
+    child.once('spawn', () => {
+      spawnSettled = true
+      if (stopRequested) {
+        stopAndSettle()
+      }
+    })
+
     const timer =
       spec.timeoutMs === null
         ? undefined
         : setTimeout(() => {
             timedOut = true
-            stopAndSettle()
+            requestStop()
           }, spec.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS)
     timer?.unref?.()
 
-    const onAbort = (): void => stopAndSettle()
+    const onAbort = (): void => requestStop()
     spec.signal?.addEventListener('abort', onAbort, { once: true })
     // Already-aborted signals emit no event; recheck after subscribing to close the race.
     if (spec.signal?.aborted) {
@@ -266,6 +283,7 @@ export function runProcess(
     }
 
     child.once('error', (error) => {
+      spawnSettled = true
       terminationReporter.reportIf(!child.pid)
       if (barrierStopping) {
         deferredError = error
