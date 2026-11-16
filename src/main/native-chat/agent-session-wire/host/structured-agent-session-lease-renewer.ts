@@ -109,6 +109,9 @@ export class StructuredAgentSessionLeaseRenewer {
         now
       })
     }
+    if (renewals.length === 0) {
+      return
+    }
     // Batch healthy renewals; retry superseded entries individually to preserve isolation.
     let results: PromiseSettledResult<AgentSessionRecord>[]
     try {
