@@ -141,7 +141,7 @@ describe('native first-message ordering', () => {
     }
   })
 
-  it('treats an incomplete session scan as unreadable rather than a miss', async () => {
+  it('reports an incomplete session scan, never a partial set as found or as a miss', async () => {
     await expect(
       readNativeFirstMessage(
         {
@@ -150,6 +150,6 @@ describe('native first-message ordering', () => {
         },
         0
       )
-    ).resolves.toEqual({ kind: 'unreadable' })
+    ).resolves.toEqual({ kind: 'incomplete' })
   })
 })

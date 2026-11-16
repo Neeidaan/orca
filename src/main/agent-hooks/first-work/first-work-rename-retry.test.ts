@@ -126,6 +126,22 @@ describe('retryFirstWorkRename', () => {
     )
   })
 
+  it('names from the changes, not deferring, when the native scan hits its bound', async () => {
+    generateBranchNameMock.mockResolvedValue({ success: true, slug: 'login-form' })
+    const { deps } = makeRetryDeps({
+      runGit: changesGit(' src/login.tsx | 4 ++--\n'),
+      nativeReads: () => ({
+        listSessionIds: async () => ['long-chat'],
+        // 513 unmatched submissions precede the first real message.
+        readFirst: async () => ({ kind: 'incomplete' })
+      })
+    })
+    await expect(retryFirstWorkRename(WORKTREE_ID, deps)).resolves.toMatchObject({
+      outcome: { kind: 'renamed' }
+    })
+    expect(generateBranchNameMock.mock.calls[0][0]).toMatchObject({ fromChanges: true })
+  })
+
   it('falls back to the branch changes and reports nothing-yet without generating', async () => {
     const { deps } = makeRetryDeps()
     const result = await retryFirstWorkRename(WORKTREE_ID, deps)

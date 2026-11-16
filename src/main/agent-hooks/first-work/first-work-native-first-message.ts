@@ -3,7 +3,9 @@ import type { JournalFirstSubmittedPrompt } from '../../native-chat/agent-sessio
 export type NativeFirstMessageLookup =
   | { kind: 'found'; prompt: string; submittedAt: number }
   | { kind: 'none' }
-  /** Read failed, a scan was incomplete, or the feature's read capacity is full: retryable. */
+  /** A session hit the scan bound: no earliest message can be certified, so name from changes. */
+  | { kind: 'incomplete' }
+  /** Read failed, the scan was abandoned, or the feature's read capacity is full: retryable. */
   | { kind: 'unreadable' }
 
 export type NativeFirstMessageReads = {
@@ -81,7 +83,7 @@ export async function readNativeFirstMessage(
     }
     const first = await reads.readFirst(sessionId, sinceMs)
     if (first.kind === 'incomplete') {
-      return { kind: 'unreadable' }
+      return { kind: 'incomplete' }
     }
     if (first.kind === 'found') {
       const candidate = { ...first, sessionId }

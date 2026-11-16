@@ -105,11 +105,12 @@ it('stops at the earliest valid message, whatever later history follows', async 
   expect(await submissionsVisited(80)).toBe(small)
 })
 
-it('reports an incomplete scan instead of a miss once the bound is reached', async () => {
+it('reports an incomplete scan when 513 unmatched submissions precede a valid one', async () => {
   const f = domainLifecycleFixture(cleanup)
   for (let index = 0; index <= FIRST_SUBMITTED_PROMPT_SCAN_LIMIT; index++) {
     await send(f, `blank-${index}`, '', 200 + index)
   }
+  await send(f, 'valid', 'Add password reset', 200 + FIRST_SUBMITTED_PROMPT_SCAN_LIMIT + 1)
   expect(first(f, 100)).toEqual({ kind: 'incomplete' })
 })
 

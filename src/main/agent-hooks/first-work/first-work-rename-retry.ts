@@ -134,6 +134,7 @@ async function lookupContext(
     if (native.kind === 'found') {
       return { kind: 'context', context: { firstPrompt: native.prompt } }
     }
+    // 'none' and 'incomplete' (scan bound reached) both name from the workspace's changes.
   }
   const worktreePath = splitWorktreeIdForFilesystem(worktreeId)?.worktreePath
   if (parseWorkspaceKey(worktreeId)?.type === 'folder' || !worktreePath) {
