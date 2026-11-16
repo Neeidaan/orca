@@ -61,6 +61,8 @@ class WorkerThreadChildStdin extends EventEmitter {
   }
 }
 
+let abandonedTreeKills: Promise<void> = Promise.resolve()
+
 /** Main-thread stand-in for a piped ChildProcess whose real process lives on the worker. */
 export class WorkerThreadChildProcess extends EventEmitter {
   ownedGroupStopping = false
@@ -147,24 +149,30 @@ export class WorkerThreadChildProcess extends EventEmitter {
   abandon(message: string): void {
     this.emitErrorIfObserved({ message })
     const pid = this.pid
-    // No pid proves nothing: the worker may have created the process before it could report it.
-    if (!this.nativeLike || this.closed || pid === undefined) {
+    // No pid proves nothing (the worker may have created the process unreported); an exited root's pid may be reused.
+    if (
+      !this.nativeLike ||
+      this.closed ||
+      pid === undefined ||
+      this.exitCode !== null ||
+      this.signalCode !== null
+    ) {
       return
     }
     if (!admitProcessTreeKill({ pid, site: 'worker-child-abandon', scope: 'win-taskkill-tree' })) {
       return
     }
-    // In-thread taskkill: the worker is gone, and this runs only when it dies.
-    void startWindowsTreeKill(this as unknown as ChildProcess, pid, () => {}).settled.then(
-      (verdict) => {
-        if (verdict !== 'exited' || this.closed) {
-          return
-        }
-        if (this.exitCode === null && this.signalCode === null) {
+    // In-thread taskkill (the worker is gone), one at a time so a loss cannot stall main for every child at once.
+    abandonedTreeKills = abandonedTreeKills.then(() =>
+      startWindowsTreeKill(this as unknown as ChildProcess, pid, () => {}).settled.then(
+        (verdict) => {
+          if (verdict !== 'exited' || this.closed) {
+            return
+          }
           this.receive({ type: 'exit', id: this.id, code: null, signal: null })
+          this.receive({ type: 'close', id: this.id, code: null, signal: null })
         }
-        this.receive({ type: 'close', id: this.id, code: null, signal: null })
-      }
+      )
     )
   }
 

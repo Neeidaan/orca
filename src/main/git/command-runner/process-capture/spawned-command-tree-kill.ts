@@ -13,18 +13,27 @@ export function killSpawnedCommandTree(
   if ('id' in child && child.pid === undefined && !child.closed) {
     // A worker-launched child reports its pid asynchronously; a root-only kill now would orphan its tree.
     return new Promise((resolve) => {
-      const onSpawn = (): void => {
+      const detach = (): void => {
+        clearTimeout(stalled)
+        child.off('spawn', onSpawn)
         child.off('close', onGone)
         child.off('error', onGone)
+      }
+      const onSpawn = (): void => {
+        detach()
         void killSpawnedCommandTree(child).then(resolve)
       }
       // A lost worker reports an error and may never confirm a pid; the caller must still settle.
       const onGone = (): void => {
-        child.off('spawn', onSpawn)
-        child.off('close', onGone)
-        child.off('error', onGone)
+        detach()
         resolve()
       }
+      // A stalled worker: queue a root kill (delivered once it spawns) and let the caller settle.
+      const stalled = setTimeout(() => {
+        detach()
+        child.kill()
+        resolve()
+      }, WINDOWS_TREE_KILL_WAIT_MS)
       child.once('spawn', onSpawn)
       child.once('close', onGone)
       child.once('error', onGone)
@@ -103,6 +112,9 @@ export function killSpawnedCommandTree(
     // Give taskkill its full wait once it exists; a worker launch may first queue behind others.
     if ('id' in killer && killer.pid === undefined) {
       killer.once('spawn', arm)
+      // If the worker stalls, settle the caller with a root kill and let taskkill run when dispatched.
+      const dispatch = setTimeout(() => finish(true), WINDOWS_TREE_KILL_WAIT_MS)
+      killer.once('spawn', () => clearTimeout(dispatch))
     } else {
       arm()
     }

@@ -262,10 +262,15 @@ export function runProcess(
         return
       }
       stopRequested = true
+      // A stalled launcher must not hold the caller: settle after the grace without reporting termination.
+      graceTimer ??= setTimeout(() => resolveFromClose(null, null), PROCESS_EXIT_GRACE_MS)
+      graceTimer.unref?.()
     }
     child.once('spawn', () => {
       spawnSettled = true
       if (stopRequested) {
+        clearTimeout(graceTimer)
+        graceTimer = undefined
         stopAndSettle()
       }
     })
