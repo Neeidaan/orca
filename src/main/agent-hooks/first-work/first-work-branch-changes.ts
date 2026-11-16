@@ -6,6 +6,10 @@ import {
 import { gitExecFileAsync } from '../../git/command-runner/git-exec-file'
 import type { GitExecOptions } from '../../git/command-runner/git-exec-options'
 import { isQuietGitControlFlowExit } from '../../git/command-runner/host-routing/git-command-resolution'
+import {
+  gitOptionalLocksDisabledEnv,
+  offlineGitEnv
+} from '../../git/command-runner/git-environment/git-process-env'
 
 export type BranchChangesLookup =
   | { kind: 'changes'; changes: BranchNameChanges }
@@ -52,7 +56,8 @@ function parseGitExitFields(error: unknown): GitExitFields {
 /** Abort and timeout outrank clipping; clipping counts only with a clean exit the route observed. */
 export function classifyGitCaptureError(
   error: unknown,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
+  maxBuffer: number
 ): GitCapture {
   if (signal?.aborted || error instanceof GitCommandTimeoutError) {
     return { kind: 'failed' }
@@ -60,12 +65,21 @@ export function classifyGitCaptureError(
   const exit = parseGitExitFields(error)
   const truncated = exit.outputTruncated === true
   if (truncated && exit.code === 0 && exit.killed !== true && (exit.signal ?? null) === null) {
-    return { kind: 'truncated', stdout: typeof exit.stdout === 'string' ? exit.stdout : '' }
+    const stdout = typeof exit.stdout === 'string' ? exit.stdout : ''
+    // The flag also covers stderr; below the cap, stdout is complete and only diagnostics were clipped.
+    return stdoutReachedCap(stdout, maxBuffer)
+      ? { kind: 'truncated', stdout }
+      : { kind: 'ok', stdout }
   }
   if (!truncated && isQuietGitControlFlowExit(error)) {
     return { kind: 'quiet-exit' }
   }
   return { kind: 'failed' }
+}
+
+// A clipped UTF-8 stream may stop up to one partial character short of the byte cap.
+function stdoutReachedCap(stdout: string, maxBuffer: number): boolean {
+  return Buffer.byteLength(stdout) >= maxBuffer - 3
 }
 
 function evidenceText(capture: GitCapture): string | null {
@@ -89,21 +103,26 @@ export async function readBranchChangesForNaming(args: {
 }): Promise<BranchChangesLookup> {
   const runGit = args.runGit ?? gitExecFileAsync
   const capture = async (gitArgs: string[], maxBuffer = EVIDENCE_MAX_BUFFER) => {
-    if (args.signal.aborted || Date.now() >= args.deadlineAt) {
+    const live = () => !args.signal.aborted && Date.now() < args.deadlineAt
+    if (!live()) {
       return { kind: 'failed' } as const
     }
     try {
       const { stdout } = await runGit(gitArgs, {
         cwd: args.cwd,
+        // Evidence is local by contract: no lazy partial-clone fetch, no transport, no index refresh.
+        env: gitOptionalLocksDisabledEnv(offlineGitEnv()),
         maxBuffer,
         timeout: Math.min(GIT_READ_TIMEOUT_MS, Math.max(1, args.deadlineAt - Date.now())),
         signal: args.signal,
+        // Rechecked after admission and before any routed fallback, so expiry never launches a child.
+        canStart: live,
         // The barrier route reports exit status alongside clipping, so precedence is observable.
         terminationBarrier: true
       })
       return { kind: 'ok', stdout } as const
     } catch (error) {
-      return classifyGitCaptureError(error, args.signal)
+      return classifyGitCaptureError(error, args.signal, maxBuffer)
     }
   }
 

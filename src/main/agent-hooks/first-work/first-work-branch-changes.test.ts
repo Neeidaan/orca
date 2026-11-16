@@ -1,8 +1,9 @@
 import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { gitExecFileAsync } from '../../git/command-runner/git-exec-file'
+import type { GitExecOptions } from '../../git/command-runner/git-exec-options'
 import { readBranchChangesForNaming } from './first-work-branch-changes'
 
 const roots: string[] = []
@@ -151,5 +152,77 @@ describe('readBranchChangesForNaming', () => {
         deadlineAt: 0
       })
     ).resolves.toEqual({ kind: 'unreadable' })
+  })
+})
+
+describe('readBranchChangesForNaming with an injected runner', () => {
+  type Call = { args: string[]; options: GitExecOptions }
+  const ok = (stdout: string) => Promise.resolve({ stdout })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('runs every Git read with the offline environment', async () => {
+    const calls: Call[] = []
+    await readBranchChangesForNaming({
+      cwd: '/repo',
+      baseRef: 'main',
+      signal: new AbortController().signal,
+      deadlineAt: Number.MAX_SAFE_INTEGER,
+      runGit: (args, options) => {
+        calls.push({ args, options })
+        return ok(args[0] === 'rev-parse' || args[0] === 'merge-base' ? 'sha\n' : '')
+      }
+    })
+    expect(calls).toHaveLength(6)
+    for (const { options } of calls) {
+      expect(options.env).toMatchObject({ GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: 'none' })
+    }
+  })
+
+  it('launches no Git work once the deadline has passed, including routed retries', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_000)
+    const calls: Call[] = []
+    const result = await readBranchChangesForNaming({
+      cwd: '/repo',
+      baseRef: 'main',
+      signal: new AbortController().signal,
+      deadlineAt: 2_000,
+      runGit: (args, options) => {
+        calls.push({ args, options })
+        // The deadline passes while the first read runs.
+        vi.setSystemTime(2_500)
+        return ok('sha\n')
+      }
+    })
+    expect(result).toEqual({ kind: 'unreadable' })
+    expect(calls.map(({ args }) => args[0])).toEqual(['rev-parse'])
+    expect(calls[0]?.options.canStart?.()).toBe(false)
+  })
+
+  it('does not count clipped diagnostics as work when stdout is complete', async () => {
+    const clipped = (stdout: string) =>
+      Promise.reject(
+        Object.assign(new Error('git produced more than 262144 bytes of output.'), {
+          code: 0,
+          killed: false,
+          signal: null,
+          outputTruncated: true,
+          stdout
+        })
+      )
+    const read = (stdout: string) =>
+      readBranchChangesForNaming({
+        cwd: '/repo',
+        baseRef: undefined,
+        signal: new AbortController().signal,
+        deadlineAt: Number.MAX_SAFE_INTEGER,
+        runGit: (args) => (args[0] === 'ls-files' ? ok('') : clipped(stdout))
+      })
+    await expect(read('')).resolves.toEqual({ kind: 'nothing-yet' })
+    const atCap = await read('x'.repeat(256 * 1024))
+    expect(atCap.kind === 'changes' && atCap.changes.workingStat.endsWith('…')).toBe(true)
   })
 })

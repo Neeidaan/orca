@@ -96,17 +96,19 @@ beforeEach(() => {
     runningAttemptId: null
   })
   useAppStore.setState({ updateWorktreeMeta })
-  ;(window as unknown as { api: unknown }).api = {
-    worktrees: {
-      getBranchRenameFailureOutput,
-      updateMeta,
-      getBranchAutoRenameRetryAvailability,
-      retryBranchAutoRename,
-      onBranchAutoRenameAttempt
-    },
-    nativeChat: { getConversationNameFailureOutput: getBranchRenameFailureOutput },
-    ui: { writeClipboardText }
-  }
+  Object.assign(window, {
+    api: {
+      worktrees: {
+        getBranchRenameFailureOutput,
+        updateMeta,
+        getBranchAutoRenameRetryAvailability,
+        retryBranchAutoRename,
+        onBranchAutoRenameAttempt
+      },
+      nativeChat: { getConversationNameFailureOutput: getBranchRenameFailureOutput },
+      ui: { writeClipboardText }
+    }
+  })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -314,5 +316,86 @@ describe('AutoRenameFailedDialog retry', () => {
       'The branch changed while Orca was naming it.'
     )
     expect(button('Dismiss')?.disabled).toBe(false)
+  })
+})
+
+describe('AutoRenameFailedDialog sessions and focus', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function Controlled({ open }: { open: boolean }) {
+    return (
+      <AutoRenameFailedDialog
+        open={open}
+        onOpenChange={() => {}}
+        worktreeId="repo1::/path/wt1"
+        executionHostId="local"
+        worktreeName="Nautilus"
+        error={EXCERPT_ERROR}
+      />
+    )
+  }
+
+  it('ignores an availability reply from a closed session after reopening', async () => {
+    getBranchRenameFailureOutput.mockResolvedValue(null)
+    const stale = Promise.withResolvers<{ available: boolean; runningAttemptId: number | null }>()
+    getBranchAutoRenameRetryAvailability.mockReturnValueOnce(stale.promise)
+    getBranchAutoRenameRetryAvailability.mockResolvedValueOnce({
+      available: true,
+      runningAttemptId: null
+    })
+    await act(async () => root.render(<Controlled open />))
+    await act(async () => root.render(<Controlled open={false} />))
+    await act(async () => root.render(<Controlled open />))
+    await act(async () => stale.resolve({ available: true, runningAttemptId: 5 }))
+    expect(button('Dismiss')?.disabled).toBe(false)
+    expect(button('Try again')).toBeDefined()
+  })
+
+  function queueFrames(): FrameRequestCallback[] {
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((frame) => {
+      frames.push(frame)
+      return frames.length
+    })
+    return frames
+  }
+
+  it('does not take back focus the user moved before the queued focus runs', async () => {
+    const frames = queueFrames()
+    await renderFailure()
+    retryBranchAutoRename.mockResolvedValue({
+      attemptId: 1,
+      outcome: { kind: 'nothing-yet' },
+      finishedAt: 1
+    })
+    button('Try again')?.focus()
+    await act(async () => button('Try again')?.click())
+    button('Dismiss')?.focus()
+    await act(async () => frames.splice(0).forEach((frame) => frame(0)))
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
+  })
+
+  it('does not focus a reopened dialog from the previous session’s queued focus', async () => {
+    const frames = queueFrames()
+    getBranchRenameFailureOutput.mockResolvedValue(null)
+    getBranchAutoRenameRetryAvailability.mockResolvedValue({
+      available: true,
+      runningAttemptId: null
+    })
+    retryBranchAutoRename.mockResolvedValue({
+      attemptId: 1,
+      outcome: { kind: 'nothing-yet' },
+      finishedAt: 1
+    })
+    await act(async () => root.render(<Controlled open />))
+    button('Try again')?.focus()
+    await act(async () => button('Try again')?.click())
+    await act(async () => root.render(<Controlled open={false} />))
+    await act(async () => root.render(<Controlled open />))
+    button('Dismiss')?.focus()
+    await act(async () => frames.splice(0).forEach((frame) => frame(0)))
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss')
   })
 })

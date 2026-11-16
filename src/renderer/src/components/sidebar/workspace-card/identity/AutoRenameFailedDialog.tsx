@@ -83,7 +83,21 @@ export function AutoRenameFailedDialog({
         return
       }
       const target = outcome.kind === 'ineligible' ? dismissRef : tryAgainRef
-      requestAnimationFrame(() => target.current?.focus())
+      const focusedAtFinish = document.activeElement
+      requestAnimationFrame(() => {
+        // Re-validate at run time: the dialog may have closed or reopened, or the user moved focus.
+        const button = target.current
+        const active = document.activeElement
+        if (
+          button &&
+          dialog.isConnected &&
+          button.closest('[role="dialog"]') === dialog &&
+          // Unchanged, or dropped to <body> because the focused Try again just unmounted.
+          (active === focusedAtFinish || active === document.body)
+        ) {
+          button.focus()
+        }
+      })
     }
   })
   const dismissLabel = t('auto.components.sidebar.AutoRenameFailedDialog.dismiss', 'Dismiss')
@@ -306,11 +320,11 @@ export function NameGenerationFailedDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle
-            className={cn('flex items-center gap-2', tone === 'error' && 'text-destructive')}
-          >
-            {tone === 'error' ? <AlertCircle className="size-4 shrink-0" /> : null}
-            {title}
+          <DialogTitle>
+            <span className={cn('flex items-center gap-2', tone === 'error' && 'text-destructive')}>
+              {tone === 'error' ? <AlertCircle className="size-4 shrink-0" /> : null}
+              {title}
+            </span>
           </DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">{reason ?? description}</p>

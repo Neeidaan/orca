@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from 'vitest'
 import { domainLifecycleFixture } from './journal-domain-lifecycle.test-fixture'
 import { readJournalSqlPoint } from './journal-sql-point-read'
+import { FIRST_SUBMITTED_PROMPT_SCAN_LIMIT } from './journal-domain-first-submitted-prompt'
 import type { AgentJournalMessageItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 
 const cleanup: (() => void)[] = []
@@ -39,7 +40,11 @@ it('applies the creation bound before taking the earliest submission', async () 
   const f = domainLifecycleFixture(cleanup)
   await send(f, 'opener', 'Pre-creation opener', 50)
   await send(f, 'qualifying', 'Fix the login form', 110)
-  expect(first(f, 100)).toEqual({ prompt: 'Fix the login form', submittedAt: 110 })
+  expect(first(f, 100)).toMatchObject({
+    kind: 'found',
+    prompt: 'Fix the login form',
+    submittedAt: 110
+  })
 })
 
 it('orders by submission time, not journal sequence, and ignores context clears', async () => {
@@ -49,12 +54,33 @@ it('orders by submission time, not journal sequence, and ignores context clears'
   f.db
     .prepare("UPDATE journal_items SET context_clear=1 WHERE item_id LIKE '%sequenced-second%'")
     .run()
-  expect(first(f, 100)).toEqual({ prompt: 'Submitted earlier', submittedAt: 200 })
+  expect(first(f, 100)).toMatchObject({
+    kind: 'found',
+    prompt: 'Submitted earlier',
+    submittedAt: 200
+  })
+})
+
+it('pages past text-less candidates to the first message with text', async () => {
+  const f = domainLifecycleFixture(cleanup)
+  for (let index = 0; index < 40; index++) {
+    await send(f, `blank-${index}`, '', 200 + index)
+  }
+  await send(f, 'named', 'Add password reset', 300)
+  expect(first(f, 100)).toMatchObject({ kind: 'found', prompt: 'Add password reset' })
+})
+
+it('reports an incomplete scan instead of a miss once the bound is reached', async () => {
+  const f = domainLifecycleFixture(cleanup)
+  for (let index = 0; index <= FIRST_SUBMITTED_PROMPT_SCAN_LIMIT; index++) {
+    await send(f, `blank-${index}`, '', 200 + index)
+  }
+  expect(first(f, 100)).toEqual({ kind: 'incomplete' })
 })
 
 it('never treats a message without a submission row as a candidate', async () => {
   const f = domainLifecycleFixture(cleanup)
   await send(f, 'orphaned', 'No submission', 150)
   f.db.prepare("DELETE FROM journal_submission_attempts WHERE message_id='orphaned'").run()
-  expect(first(f, 100)).toBeNull()
+  expect(first(f, 100)).toEqual({ kind: 'none' })
 })

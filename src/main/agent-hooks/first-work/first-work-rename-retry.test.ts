@@ -51,7 +51,10 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-const noNativeChat: Reads = () => ({ listSessionIds: async () => [], readFirst: async () => null })
+const noNativeChat: Reads = () => ({
+  listSessionIds: async () => [],
+  readFirst: async () => ({ kind: 'none' })
+})
 
 function changesGit(stat: string) {
   return async (args: string[]) => {
@@ -101,8 +104,8 @@ describe('retryFirstWorkRename', () => {
         listSessionIds: async () => ['later', 'earlier'],
         readFirst: async (sessionId) =>
           sessionId === 'earlier'
-            ? { prompt: 'Fix the login form', submittedAt: 110 }
-            : { prompt: 'Polish the README', submittedAt: 120 }
+            ? { kind: 'found', prompt: 'Fix the login form', submittedAt: 110, sequence: 9 }
+            : { kind: 'found', prompt: 'Polish the README', submittedAt: 120, sequence: 1 }
       })
     })
     const result = await retryFirstWorkRename(WORKTREE_ID, deps)
@@ -148,7 +151,12 @@ describe('retryFirstWorkRename', () => {
     const { deps } = makeRetryDeps({
       nativeReads: () => ({
         listSessionIds,
-        readFirst: async () => ({ prompt: 'Late message', submittedAt: 200 })
+        readFirst: async () => ({
+          kind: 'found',
+          prompt: 'Late message',
+          submittedAt: 200,
+          sequence: 1
+        })
       })
     })
     const first = retryFirstWorkRename(WORKTREE_ID, deps)
@@ -180,6 +188,41 @@ describe('retryFirstWorkRename', () => {
     await expect(result).resolves.toMatchObject({
       outcome: { kind: 'ineligible', reason: 'name-chosen' }
     })
+    expect(gitExecFileAsyncMock).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['branch', '-m']),
+      expect.anything()
+    )
+  })
+
+  it.each([
+    ['setting turned off', 'setting-off'],
+    ['branch ownership lost', 'name-chosen']
+  ])('renames nothing when the %s during the final upstream probe', async (_label, reason) => {
+    generateBranchNameMock.mockResolvedValue({ success: true, slug: 'fix-auth' })
+    let eligible = true
+    const probe = deferred<void>()
+    let probes = 0
+    const respond = gitResponder({ currentBranch: 'Nautilus-8', hasUpstream: false })
+    gitExecFileAsyncMock.mockImplementation(async (args: string[]) => {
+      // The second upstream probe is the one inside the final recheck.
+      if (args.some((arg) => arg.includes('@{u}')) && ++probes === 2) {
+        await probe.promise
+      }
+      return respond(args)
+    })
+    const { deps } = makeRetryDeps({
+      runGit: changesGit(' a.ts | 1 +\n'),
+      canRenameOrcaCreatedBranch: () => eligible
+    })
+    const result = retryFirstWorkRename(WORKTREE_ID, deps)
+    await vi.waitFor(() => expect(probes).toBe(2))
+    if (reason === 'setting-off') {
+      deps.getSettings().autoRenameBranchFromWork = false
+    } else {
+      eligible = false
+    }
+    probe.resolve()
+    await expect(result).resolves.toMatchObject({ outcome: { kind: 'ineligible', reason } })
     expect(gitExecFileAsyncMock).not.toHaveBeenCalledWith(
       expect.arrayContaining(['branch', '-m']),
       expect.anything()

@@ -1,15 +1,14 @@
+import type { JournalFirstSubmittedPrompt } from '../../native-chat/agent-session-journal/journal-domain-first-submitted-prompt'
+
 export type NativeFirstMessageLookup =
   | { kind: 'found'; prompt: string; submittedAt: number }
   | { kind: 'none' }
-  /** Read failed or the feature's read capacity is full: retryable. */
+  /** Read failed, a scan was incomplete, or the feature's read capacity is full: retryable. */
   | { kind: 'unreadable' }
 
 export type NativeFirstMessageReads = {
   listSessionIds: () => Promise<string[]>
-  readFirst: (
-    sessionId: string,
-    sinceMs: number
-  ) => Promise<{ prompt: string; submittedAt: number } | null>
+  readFirst: (sessionId: string, sinceMs: number) => Promise<JournalFirstSubmittedPrompt>
 }
 
 // Leases outlive a logical timeout until the physical read settles, so expiries cannot pile up reads.
@@ -42,17 +41,38 @@ export function leaseNativeFirstMessageRead(
   return physical
 }
 
+type Candidate = { prompt: string; submittedAt: number; sequence: number; sessionId: string }
+
+/** D4 order: submission time, then item sequence; session id only makes an exact tie deterministic. */
+function precedes(left: Candidate, right: Candidate): boolean {
+  if (left.submittedAt !== right.submittedAt) {
+    return left.submittedAt < right.submittedAt
+  }
+  if (left.sequence !== right.sequence) {
+    return left.sequence < right.sequence
+  }
+  return left.sessionId < right.sessionId
+}
+
 /** The earliest qualifying native-chat message of the workspace, one point read at a time. */
 export async function readNativeFirstMessage(
   reads: NativeFirstMessageReads,
   sinceMs: number
 ): Promise<NativeFirstMessageLookup> {
-  let earliest: { prompt: string; submittedAt: number } | null = null
+  let earliest: Candidate | null = null
   for (const sessionId of await reads.listSessionIds()) {
     const first = await reads.readFirst(sessionId, sinceMs)
-    if (first && (!earliest || first.submittedAt < earliest.submittedAt)) {
-      earliest = first
+    if (first.kind === 'incomplete') {
+      return { kind: 'unreadable' }
+    }
+    if (first.kind === 'found') {
+      const candidate = { ...first, sessionId }
+      if (!earliest || precedes(candidate, earliest)) {
+        earliest = candidate
+      }
     }
   }
-  return earliest ? { kind: 'found', ...earliest } : { kind: 'none' }
+  return earliest
+    ? { kind: 'found', prompt: earliest.prompt, submittedAt: earliest.submittedAt }
+    : { kind: 'none' }
 }

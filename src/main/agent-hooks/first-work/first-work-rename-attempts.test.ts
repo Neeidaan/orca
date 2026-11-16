@@ -9,9 +9,12 @@ import {
 import { isFirstWorkGenerationBackingOff } from './first-work-generation-backoff'
 import {
   leaseNativeFirstMessageRead,
+  readNativeFirstMessage,
   resetNativeFirstMessageReads,
   type NativeFirstMessageLookup
 } from './first-work-native-first-message'
+
+import type { JournalFirstSubmittedPrompt } from '../../native-chat/agent-session-journal/journal-domain-first-submitted-prompt'
 
 const ID = 'repo::/repo/wt'
 
@@ -105,5 +108,43 @@ describe('native first-message read lease', () => {
       void lease('d')
       expect(physical).toHaveBeenCalledWith('d')
     })
+  })
+})
+
+describe('native first-message ordering', () => {
+  const found = (prompt: string, submittedAt: number, sequence: number) =>
+    ({ kind: 'found', prompt, submittedAt, sequence }) as const
+
+  it('breaks an equal submission time by sequence, whatever the session order', async () => {
+    const firsts: Record<string, JournalFirstSubmittedPrompt> = {
+      a: found('Later in sequence', 100, 7),
+      b: found('Earlier in sequence', 100, 3)
+    }
+    for (const order of [
+      ['a', 'b'],
+      ['b', 'a']
+    ] as const) {
+      await expect(
+        readNativeFirstMessage(
+          {
+            listSessionIds: async () => [...order],
+            readFirst: async (id) => firsts[id] ?? { kind: 'none' }
+          },
+          0
+        )
+      ).resolves.toMatchObject({ prompt: 'Earlier in sequence' })
+    }
+  })
+
+  it('treats an incomplete session scan as unreadable rather than a miss', async () => {
+    await expect(
+      readNativeFirstMessage(
+        {
+          listSessionIds: async () => ['a', 'b'],
+          readFirst: async (id) => (id === 'a' ? found('Found', 100, 1) : { kind: 'incomplete' })
+        },
+        0
+      )
+    ).resolves.toEqual({ kind: 'unreadable' })
   })
 })
