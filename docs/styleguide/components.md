@@ -26,7 +26,7 @@ Variants in priority order:
 
 Sizes are defined in `button.tsx` (`default`, `sm`, `xs`, `lg`, plus `icon`, `icon-xs`, `icon-sm`, `icon-lg`). Match the size to the surrounding row height — don't drop a `default` button into a 28px toolbar.
 
-Buttons inside `DialogFooter` get an outline on hover, a solid `ring` outline on focus (including the initially focused dialog action), and a closer outline while pressed (see `main.css`). Keep these cues scoped to dialog actions; elsewhere buttons use the default `focus-visible` ring only — toolbar and icon buttons should not get hover outlines.
+Buttons inside `DialogFooter` get an outline on hover, a solid `ring` outline on keyboard focus (`:focus-visible`, so an auto-focused default action keeps focus but shows no ring when the dialog opens from a click), and a closer outline while pressed (see `main.css`). `ButtonGroup` segments get the same cues as a rounded ring around that segment only, never a square half-box or a ring around the whole group. Keep these cues scoped to dialog actions; elsewhere buttons use the default `focus-visible` ring only — toolbar and icon buttons should not get hover outlines.
 
 ## Picking the right primitive
 

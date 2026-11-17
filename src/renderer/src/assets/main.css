@@ -897,9 +897,10 @@ body[data-modal-overlay-open]
 
 /* Outline interaction cues are scoped to dialog footer actions only. #41870 applied them to
    every Button/Toggle/SelectTrigger, which read as noise on dense toolbar icon buttons.
-   Unlayered on purpose so it beats the Button's `outline-none` utility. Uses :focus (not
-   :focus-visible) so a dialog's auto-focused default action is visibly marked on open, and
-   clears the Button's focus-visible ring so the two cues don't stack. */
+   Unlayered on purpose so it beats the Button's `outline-none` utility. Uses :focus-visible so
+   a dialog's auto-focused default action keeps focus (Enter still activates it) without a ring
+   on pointer open, while keyboard focus still shows one. Clears the Button's focus-visible ring
+   so the two cues don't stack. */
 [data-slot='dialog-footer'] [data-slot='button']:not(:disabled, [aria-disabled='true']) {
   @media (hover: hover) {
     &:hover {
@@ -908,7 +909,7 @@ body[data-modal-overlay-open]
     }
   }
 
-  &:focus {
+  &:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
     --tw-ring-shadow: 0 0 #0000;
@@ -917,6 +918,61 @@ body[data-modal-overlay-open]
   &:active {
     outline: 2px solid var(--ring);
     outline-offset: 0;
+  }
+}
+
+/* ButtonGroup segments have squared inner corners, so an outline would box half a pill.
+   Draw the same cues per segment with ::after, rounded on all four sides and never around the
+   whole group, so each segment's focus stays distinct. ButtonGroup raises a focused segment
+   (z-20) above a hovered one (z-10), so its ring paints over a hovered neighbor. A menu
+   chevron is a Button rendered through DropdownMenuTrigger, whose data-slot replaces Button's. */
+[data-slot='dialog-footer']
+  [data-slot='button-group']
+  > :is([data-slot='button'], [data-slot='dropdown-menu-trigger']):not(
+    :disabled,
+    [aria-disabled='true']
+  ) {
+  position: relative;
+
+  &::after {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  @media (hover: hover) {
+    &:hover {
+      outline: none;
+    }
+
+    &:hover::after {
+      content: '';
+      inset: -2px;
+      border: 1px solid var(--ring);
+      border-radius: calc(var(--radius-md) + 2px);
+    }
+  }
+
+  &:focus-visible {
+    outline: none;
+    --tw-ring-shadow: 0 0 #0000;
+  }
+
+  &:focus-visible::after {
+    content: '';
+    inset: -4px;
+    border: 2px solid var(--ring);
+    border-radius: calc(var(--radius-md) + 3px);
+  }
+
+  &:active {
+    outline: none;
+  }
+
+  &:active::after {
+    content: '';
+    inset: -2px;
+    border: 2px solid var(--ring);
+    border-radius: calc(var(--radius-md) + 2px);
   }
 }
 
