@@ -16,9 +16,9 @@ import {
   assertAiVaultCopiedSessionStoreAllowed,
   buildAiVaultForkStartup,
   buildAiVaultLocalResumeStartup,
-  getAiVaultResumeCodexHome,
   resolveAiVaultCopiedSessionAgentArgs
 } from '../../../../shared/ai-vault/resume/ai-vault-resume-startup'
+import { getAiVaultResumeCodexHome } from '../../../../shared/ai-vault/resume/ai-vault-resume-path'
 
 /** One native execution fact builds the line and chooses the shell that receives it. */
 export function buildMobileTerminalChatFork(args: {
